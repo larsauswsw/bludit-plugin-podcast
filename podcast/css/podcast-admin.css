@@ -1,0 +1,70 @@
+/*
+ * Podcast-Plugin – Ergänzungen zum Bludit-Admin (Theme „booty“, Bootstrap 4).
+ *
+ * Bewusst klein: Aussehen und Farben kommen von Bludit. Hier steht nur, wofür
+ * Bludit keine eigene Klasse hat.
+ */
+
+/* Episodenliste: Schriftgrößen wie Bludits Inhaltsliste (views/content.php) */
+#podcast-episode-list .podcast-episode-title {
+    font-size: 1.1em;
+}
+
+#podcast-episode-list .podcast-episode-meta {
+    font-size: 0.8em;
+}
+
+/*
+ * Datumsfeld: booty vergrößert den Innenabstand von .form-control, die Höhe
+ * bleibt die feste Bootstrap-Höhe. Bei Textfeldern fällt das nicht auf, Safari
+ * auf iOS setzt den Datumswert aber oben in den Inhaltsbereich, ohne feste
+ * Höhe (WebKit-Bug 198959), und zentriert ihn waagerecht.
+ * Lösung wie in Bootstrap 5: Wert eine Zeile hoch (line-height 1.5), Abstand
+ * oben und unten gleich, sodass genau diese Zeile in das Feld passt
+ * (Bootstrap-Abstand .375rem, 1px weniger wegen des 2-px-Rahmens von booty).
+ */
+#podcast-episode-form input[type="datetime-local"].form-control {
+    padding-top: calc(.375rem - 1px);
+    padding-bottom: calc(.375rem - 1px);
+}
+
+#podcast-episode-form input[type="datetime-local"]::-webkit-date-and-time-value {
+    height: 1.5em;
+    margin: 0;
+    text-align: left;
+}
+
+/* Upload-Feld: Dateiname in normaler Schrift, lange Namen gekürzt statt unter dem Knopf */
+#podcast-episode-form .custom-file-label {
+    overflow: hidden;
+    padding-right: 8rem;
+    font-weight: var(--font-weight-normal, 450);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+/* Kanaleinstellungen: „Adresse des Feeds“ ist nur zum Kopieren da und soll
+   nicht wie ein Eingabefeld aussehen (.plugin-form färbt alle Textfelder weiß) */
+.plugin-form #podcast-feedAddress {
+    background-color: var(--bg-main, #f8f9fa);
+}
+
+/* Vorschau von Kanal-Cover und Episodenbild (Roadmap 022): quadratisch, klein */
+.plugin-form #podcast-cover-preview,
+#pe-image-preview {
+    width: 140px;
+    height: 140px;
+    object-fit: cover;
+}
+
+.plugin-form #podcast-cover-preview {
+    display: block;
+    margin-top: .5rem;
+    border: 1px solid var(--border-color, #dee2e6);
+    border-radius: var(--radius-sm, .25rem);
+}
+
+/* Fehlermeldung im Hinweis unter „Cover hochladen“ (.plugin-form färbt Hinweise grau mit !important) */
+.plugin-form span.tip.podcast-tip-error {
+    color: #dc3545 !important;
+}
