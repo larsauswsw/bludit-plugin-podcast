@@ -20,9 +20,17 @@ Run a podcast with [Bludit](https://www.bludit.com): manage episodes in the admi
 
 ![Podlove Web Player on an episode page](screenshot-player.png)
 
-| Episode list on a phone | Editing an episode on a phone |
+**Media page: every upload with its usage, unused files can be deleted**
+
+![Media page in the Bludit admin panel](screenshot-media.png)
+
+**Feed check in the channel settings**
+
+![Feed check listing what is missing before submitting the feed](screenshot-feed-check.png)
+
+| Episode list on a phone | Episode image and audio from the media on a phone |
 |---|---|
-| ![Episode list on a phone](screenshot-mobile-list.png) | ![Episode form on a phone](screenshot-mobile-form.png) |
+| ![Episode list on a phone](screenshot-mobile-list.png) | ![Episode form with files from the media on a phone](screenshot-mobile-form.png) |
 
 ## Installation
 
