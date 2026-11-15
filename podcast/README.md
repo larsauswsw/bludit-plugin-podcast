@@ -6,7 +6,9 @@ A podcast plugin for [Bludit](https://www.bludit.com/) CMS. Manage episodes in t
 
 - **Episodes are Bludit pages** with the tag `podcast`; episode details are stored as Bludit custom fields, so episodes work with your theme, categories, tags and the Bludit editor
 - **Episode management** — create, edit and delete episodes on a dedicated admin page that matches the Bludit admin look and works on phones
-- **File upload or URL** — upload audio (MP3, M4A, OGG, WAV) and episode artwork (JPG, PNG) or link to external files; uploads are checked for size, file type and content
+- **File upload or URL** — upload audio (MP3, M4A, OGG, WAV) and episode artwork (JPG, PNG) or link to external files; audio is uploaded in parts with a progress bar, so PHP's default upload limits are enough; uploads are checked for size, file type and content
+- **Media** — see all uploaded files with size and usage, delete unused ones, reuse files in episodes and as channel cover
+- **Less typing** — the duration is read from the audio file, and a new episode suggests the next episode and season number
 - **RSS feed** with `<itunes:*>` tags for episode, season, type, duration, explicit and artwork
 - **Embedded audio player** — [Podlove Web Player 5](https://podlove.org/podlove-web-player/), served from your own server (no CDN), placed inside the page content of every episode; a plain HTML5 player is available as an alternative and as fallback
 - **Apple Podcasts ready** — category from Apple's list, podcast type, cover check (square, 1400–3000 px, RGB), show notes as HTML, file sizes of external audio, Podcasting 2.0 `podcast:guid` and `podcast:locked`
@@ -51,41 +53,37 @@ your-bludit/
 2. Go to **Settings → Plugins** (German: *Einstellungen → Plugins*).
 3. Find **Podcast** in the list and click **Activate** (*Aktivieren*).
 
-### 4. Configure upload limits (important for audio files)
+### 4. Upload limits
 
-PHP's default upload limits (`upload_max_filesize = 2M`, `post_max_size = 8M`) are too small for audio files. You must increase them **before** uploading audio.
+**Audio files** are uploaded in parts of up to 5 MB, so PHP's default limits (`upload_max_filesize = 2M`, `post_max_size = 8M`) are enough, also on shared hosting. The upload starts as soon as you choose the file, with a progress bar and a button to cancel it; you can fill in the other fields meanwhile, and **Save** waits for the upload to finish. A file that was uploaded but never saved (you chose another file or cancelled the form) is deleted again. The only limit is the plugin setting **Max. upload size** (default 512 MB). While uploading, the parts are collected in `bl-content/workspaces/podcast/chunks/` (not reachable from the web); after the upload the file is checked and moved to the upload folder, cancelled or abandoned parts are removed (at the latest after 24 hours). If the web server accepts less than one part per request (Nginx: `client_max_body_size`, default 1 MB), the browser automatically switches to smaller parts.
 
-The best place to configure this is in your **server configuration**, outside the Bludit directory, so the setting survives Bludit updates.
+**Images** (channel cover, episode artwork) are uploaded in one piece and are limited by PHP's `upload_max_filesize`. Apple's covers (up to 3000 × 3000 px) can be larger than 2 MB. To allow larger images, raise the limit in your **server configuration**, outside the Bludit directory, so the setting survives Bludit updates:
 
 **Option A — Apache VirtualHost** (only with **mod_php**; with PHP-FPM Apache rejects `php_value` — use Option B). Check with `apache2ctl -M | grep -E "php|proxy_fcgi"`:
 
-Add to your site's VirtualHost block:
 ```apache
 <VirtualHost *:80>
     # ... your existing config ...
-    php_value upload_max_filesize 512M
-    php_value post_max_size 520M
+    php_value upload_max_filesize 16M
+    php_value post_max_size 20M
 </VirtualHost>
 ```
 Then reload Apache: `sudo systemctl reload apache2`
 
-**Option B — PHP-FPM pool config** (recommended with PHP-FPM; `max_input_time` gives large uploads on slow connections enough time):
-
-Find your pool config (e.g. `/etc/php/8.x/fpm/pool.d/www.conf`) and add:
+**Option B — PHP-FPM pool config** (e.g. `/etc/php/8.x/fpm/pool.d/www.conf`):
 ```ini
-php_admin_value[upload_max_filesize] = 512M
-php_admin_value[post_max_size] = 520M
-php_admin_value[max_input_time] = 600
+php_admin_value[upload_max_filesize] = 16M
+php_admin_value[post_max_size] = 20M
 ```
 Then restart PHP-FPM: `sudo systemctl restart php8.x-fpm`
 
 **Option C — `.user.ini`** in your Bludit webroot (needs re-adding after Bludit updates):
 ```ini
-upload_max_filesize = 512M
-post_max_size = 520M
+upload_max_filesize = 16M
+post_max_size = 20M
 ```
 
-The episode form shows the effective limit (the smallest of the plugin setting, `upload_max_filesize` and `post_max_size`) and checks the file size in the browser before uploading.
+The episode form shows both limits below the audio field and checks the file sizes in the browser before uploading.
 
 ### 5. Upload folder protection
 
@@ -121,6 +119,8 @@ Before publishing episodes, configure your podcast channel: **Admin → Podcast 
 
 The settings are grouped like Bludit's own settings pages.
 
+At the top, a box lists what is still missing before you submit the feed to Apple Podcasts or Spotify: no episode in the feed yet (with scheduled episodes and drafts named), published episodes without audio, a missing or invalid owner email (Spotify sends its verification code there), a missing description, author or cover, or a cover that does not meet Apple's requirements. Each item links to the field. When everything is there, the box says the feed is ready to be submitted. The episode list shows the same hints above the episodes; editors only see the ones about episodes. These are hints only and never block saving.
+
 | Group | Setting | Description | Example |
 |---|---|---|---|
 | **Podcast** | **Podcast title** | The name of your podcast | `My Podcast` |
@@ -143,7 +143,7 @@ The settings are grouped like Bludit's own settings pages.
 | | **Website URL** | Your podcast website; leave empty for the Bludit site | `https://example.com` |
 | **Website & player** | **Player on episode pages** | Podlove Web Player (served locally) or a simple HTML5 player | Podlove |
 | | **Player position** | At the start of the page content (below the title) or at the end | start |
-| **Uploads** | **Max. upload size (MB)** | Plugin-level upload limit; the server's PHP limits apply as well | `512` |
+| **Uploads** | **Max. upload size (MB)** | Largest audio file; images are also limited by PHP's `upload_max_filesize` | `512` |
 
 The feed URL is built from the Bludit site address and the feed filename (subdirectory installations included). URLs that do not start with `http://` or `https://` are not used; the form marks them. Every page of the site links to the feed in its `<head>` (`<link rel="alternate" type="application/rss+xml">`), so browsers and podcast apps can find it from the website address.
 
@@ -164,13 +164,13 @@ Go to **Admin → Podcast** (microphone icon in the sidebar). The list shows all
 |---|---|
 | **Title** | Episode title (required) |
 | **Description** | Show notes / episode description (required) |
-| **Episode** | Episode number, used for `<itunes:episode>` |
-| **Season** | Season, used for `<itunes:season>` |
+| **Episode** | Episode number, used for `<itunes:episode>`. A new episode suggests the next number; saving warns if another episode in the same season has the number already |
+| **Season** | Season, used for `<itunes:season>`. A new episode suggests the season of the latest numbered episode |
 | **Type** | Full, Trailer or Bonus (`full`, `trailer`, `bonus` in the feed) |
 | **Explicit** | Explicit flag for this episode |
-| **Duration** | `HH:MM:SS`, `MM:SS` or total seconds |
-| **Episode image** | External URL or file upload (JPG, PNG) with a preview; the player falls back to the channel cover. An uploaded image that does not meet Apple's cover rules is saved with a warning |
-| **Audio** | External URL or file upload (MP3, M4A, OGG, WAV) — required. Apple Podcasts does not play WAV or OGG; the form shows a hint. For an external URL the plugin asks the server for the file size when saving (see below) |
+| **Duration** | Filled in from the audio file or URL when the browser can read it (you can change it); also accepts `MM:SS` or total seconds, saved as `HH:MM:SS` |
+| **Episode image** | External URL, file upload (JPG, PNG) or a file already uploaded (**From media**), with a preview; the player falls back to the channel cover. An uploaded image that does not meet Apple's cover rules is saved with a warning |
+| **Audio** | External URL, file upload (MP3, M4A, OGG, WAV) or a file already uploaded (**From media**) — required. Apple Podcasts does not play WAV or OGG; the form shows a hint. For an external URL the plugin asks the server for the file size when saving (see below) |
 | **Publication date** | Publication date and time, in the website's time zone |
 | **Status** | *Published* or *Draft* |
 
@@ -184,7 +184,20 @@ Click the episode title, or open the **☰** menu of the episode and choose **Ed
 
 ### Deleting an episode
 
-Open the **☰** menu and choose **Delete**, then confirm. The episode disappears from your site and the feed. Episodes that have child pages cannot be deleted from the plugin (like in Bludit's own content list).
+Open the **☰** menu and choose **Delete**, then confirm. The episode disappears from your site and the feed. If its uploaded audio file or episode image is not used anywhere else, a second question offers to delete those files as well. Episodes that have child pages cannot be deleted from the plugin (like in Bludit's own content list).
+
+When you replace the uploaded audio file or image of an episode, saving asks whether to delete the previous file, again only if nothing else uses it.
+
+### Media
+
+**Podcast → Media** lists all files in `bl-content/uploads/podcast/` with a preview for images, size, upload date and time and where each file is used: as channel cover, as audio or episode image of a page, or anywhere in the content of a page (also pages without the `podcast` tag, drafts and links with another domain). The total size is shown at the top.
+
+- Files that are not used anywhere can be deleted one by one (☰ → **Delete**) or several at once (filter by **Audio only** / **Images only** and **Show only unused files**, select, **Delete selected**). Used files cannot be deleted; change the episode first.
+- Files uploaded less than an hour ago are marked *Just uploaded* and cannot be deleted yet, because someone may be about to save an episode with them.
+- The episode form (**From media → Choose a file …**) and the channel settings (**Cover from media**) let you reuse a file that is already uploaded. A dialog lists the files newest first with size, upload time and usage; search by file name or usage (e.g. an episode title), show only unused files, 50 at a time with **Show more**. For the cover, images that do not meet Apple's requirements are marked.
+- Opening the page restores the protection files `index.php` and `.htaccess` of the upload folders if they are missing.
+
+Use this page instead of deleting files on the server: deleting everything in the upload folder by shell also removes the protection files and breaks episodes that still use the files.
 
 ### Where episode data is stored
 
@@ -238,11 +251,11 @@ The player itself sends no data to third parties. The audio file is loaded from 
 
 **"… file is larger than … MB" or "Upload too large: …" when saving**
 
-The file exceeds the plugin setting or PHP's `upload_max_filesize` / `post_max_size`. The episode form shows the effective limit below the audio field. See [Configure upload limits](#4-configure-upload-limits-important-for-audio-files) above.
+An audio file exceeds the plugin setting **Max. upload size**, or an image exceeds PHP's `upload_max_filesize`. The episode form shows both limits below the audio field. See [Upload limits](#4-upload-limits) above.
 
 **"The request is too large for the web server (HTTP 413)"**
 
-The web server rejected the request before PHP saw it. Raise its limit as well (Apache `LimitRequestBody`, Nginx `client_max_body_size`).
+The web server rejected an image upload before PHP saw it. Raise its limit as well (Apache `LimitRequestBody`, Nginx `client_max_body_size`). Audio uploads switch to smaller parts by themselves.
 
 **"Session expired or security token invalid"**
 

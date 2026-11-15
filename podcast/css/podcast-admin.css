@@ -68,3 +68,35 @@
 .plugin-form span.tip.podcast-tip-error {
     color: #dc3545 !important;
 }
+
+/* Medien (Roadmap 025): kleine Vorschau bzw. Symbol für Audio, Auswahlspalte schmal */
+#podcast-media .podcast-media-thumb,
+#podcast-media-picker .podcast-media-thumb {
+    flex: 0 0 auto;
+    width: 48px;
+    height: 48px;
+    object-fit: cover;
+}
+
+#podcast-media .podcast-media-icon,
+#podcast-media-picker .podcast-media-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted, #6c757d);
+    background-color: var(--bg-main, #f8f9fa);
+}
+
+/* Bludit gibt jedem .fa Abstand rechts (!important), das Symbol säße sonst nicht mittig */
+#podcast-media .podcast-media-icon .fa,
+#podcast-media-picker .podcast-media-icon .fa {
+    margin-right: 0 !important;
+}
+
+#podcast-media .podcast-media-check-col {
+    width: 2rem;
+}
+
+#podcast-media .podcast-episode-meta {
+    font-size: 0.8em;
+}

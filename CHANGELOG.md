@@ -6,6 +6,40 @@ and the plugin uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-15
+
+### Added
+
+- Feed check: the channel settings and the episode list show what is still
+  missing before the feed can be submitted to Apple Podcasts or Spotify, e.g.
+  no published episode yet, episodes without audio, a missing owner email,
+  description, author or cover, with a link to the field.
+- Audio files are uploaded in parts as soon as you choose them, with a
+  progress bar and a button to cancel the upload; files that are never saved
+  are deleted again. Large files now work with PHP's default upload limits, also on
+  shared hosting; the plugin setting "Max. upload size" is the only limit.
+  If the web server accepts only small requests, smaller parts are used
+  automatically.
+- The duration is read from the chosen audio file or URL and filled in; a
+  different duration you entered is kept, with an option to apply the
+  detected one.
+- A new episode suggests the next episode number and the season of the latest
+  episode. Saving warns if another episode in the same season already has the
+  number.
+- New page **Podcast → Media**: all uploaded files with preview, size, upload
+  date and time and where they are used (channel cover, episodes, page content), the total
+  size, and deleting of unused files one by one or several at once. Used files
+  and files uploaded less than an hour ago are kept.
+- Episodes can use a file that is already uploaded ("From media"), and the
+  channel settings can take the cover from the media.
+- Deleting an episode or replacing its file offers to delete the previous
+  audio file or image, if nothing else uses it.
+
+### Changed
+
+- The duration is saved as `HH:MM:SS`, also when entered as `MM:SS` or in
+  seconds.
+
 ## [1.0.0] - 2026-11-02
 
 First public release.

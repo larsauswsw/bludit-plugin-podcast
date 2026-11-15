@@ -95,7 +95,7 @@ class Podcast extends Plugin {
 
         // Titel des Browser-Tabs wie bei Bludits Seiten (controllers/about.php);
         // Bludit gibt ihn vor adminView() und unverändert aus
-        $layout['title'] = $this->html('episodes-title') . ' - ' . $layout['title'];
+        $layout['title'] = ($this->isMediaView() ? $this->html('media-title') : $this->html('episodes-title')) . ' - ' . $layout['title'];
 
         if (!$allowed) {
             return;
@@ -125,19 +125,30 @@ class Podcast extends Plugin {
         <link rel="stylesheet" href="<?php echo htmlspecialchars($this->assetUrl('css/podcast-admin.css'), ENT_QUOTES) ?>">
 
         <h2 class="mt-0 mb-3">
-          <span class="fa fa-microphone" style="font-size: 0.9em;"></span><span><?php echo $this->html('episodes-title') ?></span>
+          <span class="fa <?php echo $this->isMediaView() ? 'fa-folder-open' : 'fa-microphone' ?>" style="font-size: 0.9em;"></span><span><?php echo $this->isMediaView() ? $this->html('media-title') : $this->html('episodes-title') ?></span>
         </h2>
 
         <?php
         try {
-            echo $this->renderEpisodeSection($login->role() === 'admin');
-            echo $this->renderEpisodeForm($apiUrl);
+            $usage = $this->mediaUsage();
+            if ($this->isMediaView()) {
+                echo $this->renderMediaSection($this->mediaFiles(), $usage);
+            } else {
+                $episodes = $this->getEpisodes();
+                echo $this->renderEpisodeSection($login->role() === 'admin', $episodes, $usage);
+                echo $this->renderEpisodeForm($apiUrl, $this->suggestEpisodeNumbers($this->episodeNumberItems($episodes)));
+            }
         } catch (Exception $e) {
             Log::set(__METHOD__ . LOG_SEP . $e->getMessage());
             echo '<div class="alert alert-danger">' . $this->html('episodes-load-failed') . '</div>';
         }
         echo $this->adminScript($apiUrl);
         return ob_get_clean();
+    }
+
+    /** Ansicht „Medien“ (Roadmap 025): /admin/plugin/podcast?media */
+    private function isMediaView() {
+        return isset($_GET['media']) && !$this->isApiRequest();
     }
 
     /**
@@ -301,6 +312,7 @@ class Podcast extends Plugin {
             <?php echo $this->html('settings-intro', [], ['link' => '<a href="' . $esc(HTML_PATH_ADMIN_ROOT . 'plugin/podcast') . '">'
                 . $this->html('episodes-title') . '</a>']) ?>
         </div>
+        <?php echo $this->renderFeedCheck($this->feedProblems(), true) ?>
 
         <?php
         echo $group($this->html('group-podcast'));
@@ -333,6 +345,14 @@ class Podcast extends Plugin {
             <img id="podcast-cover-preview" alt="<?php echo $this->html('cover-preview-alt') ?>"<?php echo $coverUrl !== '' ? ' src="' . $esc($coverUrl) . '"' : ' hidden' ?>>
         </div>
         <?php
+        // Cover aus der Mediathek (Roadmap 025), Auswahl im Dialog
+        ?>
+        <div>
+            <label for="podcast-cover-media"><?php echo $this->html('cover-from-media') ?></label>
+            <button type="button" class="btn btn-outline-secondary btn-sm" id="podcast-cover-media"><?php echo $this->html('media-pick') ?></button>
+        </div>
+        <?php
+        echo $this->renderMediaPicker();
         echo $text('copyright', $this->html('copyright'), $this->html('copyright-tip'));
 
         echo $group($this->html('group-directories'));
@@ -817,10 +837,11 @@ class Podcast extends Plugin {
      * (bl-kernel/admin/views/content.php): Titel mit Datum darunter,
      * Nebenspalten erst ab mittlerer Breite, Aktionen im ☰-Menü.
      */
-    private function renderEpisodeSection($canConfigure = false) {
+    private function renderEpisodeSection($canConfigure = false, ?array $episodes = null, ?array $usage = null) {
         global $pages;
 
-        $episodes = $this->getEpisodes();
+        $episodes = $episodes ?? $this->getEpisodes();
+        $usage    = $usage ?? $this->mediaUsage();
         // Status-Badges nur für Episoden, die (noch) nicht öffentlich sind
         $publicTypes = ['published', 'sticky', 'static'];
         ob_start();
@@ -831,12 +852,16 @@ class Podcast extends Plugin {
               <a href="#" id="podcast-new-btn" class="mr-4 mb-2" role="button">
                 <span class="fa fa-plus mr-1"></span><?php echo $this->html('js-new-episode') ?>
               </a>
+              <a href="<?php echo HTML_PATH_ADMIN_ROOT ?>plugin/podcast?media" class="mr-4 mb-2">
+                <span class="fa fa-folder-open mr-1"></span><?php echo $this->html('media') ?>
+              </a>
               <?php if ($canConfigure): ?>
               <a href="<?php echo HTML_PATH_ADMIN_ROOT ?>configure-plugin/Podcast" class="mb-2">
                 <span class="fa fa-cog mr-1"></span><?php echo $this->html('channel-settings') ?>
               </a>
               <?php endif ?>
             </div>
+            <?php echo $this->renderFeedCheck($this->feedProblems($episodes), false, $canConfigure) ?>
 
             <?php if (empty($episodes)): ?>
               <p class="mt-4 text-muted"><?php echo $this->html('no-episodes') ?></p>
@@ -869,6 +894,8 @@ class Podcast extends Plugin {
                       $numbers  = [];
                       if ($season !== '') $numbers[] = $this->text('season-n', ['n' => $season]);
                       if ($number !== '') $numbers[] = $this->text('episode-n', ['n' => $number]);
+                      // Eigene Dateien, die nur diese Episode verwendet (Rückfrage beim Löschen/Ersetzen)
+                      $own = $this->episodeOwnMedia($ep, $usage);
                   ?>
                   <tr class="podcast-episode-row"
                       data-key="<?php echo htmlspecialchars($ep->key(), ENT_QUOTES) ?>"
@@ -881,6 +908,8 @@ class Podcast extends Plugin {
                       data-duration="<?php echo htmlspecialchars($raw('itunes_duration'), ENT_QUOTES) ?>"
                       data-image="<?php echo htmlspecialchars($raw('itunes_image'), ENT_QUOTES) ?>"
                       data-audio-url="<?php echo htmlspecialchars($raw('audio_url'), ENT_QUOTES) ?>"
+                      data-audio-own="<?php echo htmlspecialchars($own['audio'], ENT_QUOTES) ?>"
+                      data-image-own="<?php echo htmlspecialchars($own['image'], ENT_QUOTES) ?>"
                       data-status="<?php echo htmlspecialchars($type, ENT_QUOTES) ?>"
                       data-date="<?php echo $ep->date('Y-m-d\TH:i') ?>">
                     <td class="pt-3">
@@ -950,11 +979,230 @@ class Podcast extends Plugin {
         return ob_get_clean();
     }
 
-    private function renderEpisodeForm($apiUrl = '') {
-        $limits = $this->uploadLimits();
+    /**
+     * Ansicht „Medien“ (Roadmap 025): alle hochgeladenen Dateien mit
+     * Verwendung, Größe und Datum; unbenutzte lassen sich löschen.
+     */
+    private function renderMediaSection(array $media, array $usage) {
+        // Schutzdateien (index.php, .htaccess) wiederherstellen, falls sie fehlen
+        foreach (self::MEDIA_DIRS as $folder) {
+            $dir = PATH_UPLOADS . 'podcast' . DS . $folder . DS;
+            if (is_dir($dir)) {
+                $this->prepareUploadDir($dir);
+            }
+        }
+        $esc    = function ($value) { return htmlspecialchars((string) $value, ENT_QUOTES); };
+        $total  = ['audio' => 0, 'image' => 0];
+        $unused = 0;
+        foreach ($media as $file) {
+            $total[$file['type']] += $file['size'];
+            $unused += empty($usage[$file['ref']]) ? 1 : 0;
+        }
         ob_start();
         ?>
-        <div id="podcast-episode-form" hidden>
+        <div id="podcast-media">
+          <div class="d-flex flex-wrap">
+            <a href="<?php echo HTML_PATH_ADMIN_ROOT ?>plugin/podcast" class="mr-4 mb-2">
+              <span class="fa fa-arrow-left mr-1"></span><?php echo $this->html('episodes') ?>
+            </a>
+          </div>
+          <p class="text-muted mb-2">
+            <?php echo $this->html('media-summary', [
+                'total' => $this->formatSize($total['audio'] + $total['image']),
+                'audio' => $this->formatSize($total['audio']),
+                'image' => $this->formatSize($total['image']),
+                'count' => count($media),
+                'unused' => $unused,
+            ]) ?>
+          </p>
+
+          <?php if (empty($media)): ?>
+            <p class="mt-4 text-muted"><?php echo $this->html('media-empty') ?></p>
+          <?php else: ?>
+            <div class="d-flex flex-wrap align-items-center mt-3">
+              <select class="custom-select custom-select-sm w-auto mr-4 mb-2" id="podcast-media-type"
+                      aria-label="<?php echo $this->html('media-filter-type') ?>">
+                <option value=""><?php echo $this->html('media-filter-all') ?></option>
+                <option value="audio"><?php echo $this->html('media-filter-audio') ?></option>
+                <option value="image"><?php echo $this->html('media-filter-image') ?></option>
+              </select>
+              <div class="form-check mr-4 mb-2">
+                <input class="form-check-input" type="checkbox" id="podcast-media-unused">
+                <label class="form-check-label" for="podcast-media-unused"><?php echo $this->html('media-only-unused') ?></label>
+              </div>
+              <button type="button" class="btn btn-danger btn-sm mb-2" id="podcast-media-delete" disabled>
+                <span class="fa fa-trash mr-1"></span><?php echo $this->html('media-delete-selected') ?>
+              </button>
+            </div>
+            <table class="table mt-2">
+              <thead>
+                <tr>
+                  <th class="border-0 podcast-media-check-col" scope="col">
+                    <input type="checkbox" id="podcast-media-all" aria-label="<?php echo $this->html('media-select-all') ?>">
+                  </th>
+                  <th class="border-0" scope="col"><?php echo $this->html('media-file') ?></th>
+                  <th class="border-0 d-none d-md-table-cell" scope="col"><?php echo $this->html('media-usage') ?></th>
+                  <th class="border-0 text-right d-none d-md-table-cell" scope="col"><?php echo $this->html('media-size') ?></th>
+                  <th class="border-0 d-none d-lg-table-cell" scope="col"><?php echo $this->html('media-date') ?></th>
+                  <th class="border-0 text-center" scope="col"><?php echo $this->html('actions') ?></th>
+                </tr>
+              </thead>
+              <tbody>
+                <?php foreach ($media as $file):
+                    $uses      = $usage[$file['ref']] ?? [];
+                    $deletable = $this->mediaDeletable($file, $usage);
+                    $labels    = array_map([$this, 'mediaUseLabel'], $uses);
+                    $date      = date($this->text('datetime-format'), $file['mtime']);
+                    $typeLabel = $file['type'] === 'audio' ? $this->text('media-type-audio') : $this->text('media-type-image');
+                ?>
+                <tr class="podcast-media-row" data-ref="<?php echo $esc($file['ref']) ?>"
+                    data-name="<?php echo $esc($file['name']) ?>" data-type="<?php echo $esc($file['type']) ?>"
+                    data-unused="<?php echo $uses ? '0' : '1' ?>">
+                  <td class="pt-3">
+                    <?php if ($deletable): ?>
+                    <input type="checkbox" class="podcast-media-check" value="<?php echo $esc($file['ref']) ?>"
+                           aria-label="<?php echo $this->html('media-select', ['name' => $file['name']]) ?>">
+                    <?php endif ?>
+                  </td>
+                  <td class="pt-3">
+                    <div class="d-flex align-items-start">
+                      <?php if ($file['type'] === 'image'): ?>
+                        <img class="podcast-media-thumb border rounded mr-2" src="<?php echo $esc($file['url']) ?>" alt="" loading="lazy">
+                      <?php else: ?>
+                        <span class="podcast-media-thumb podcast-media-icon border rounded mr-2"><span class="fa fa-music" aria-hidden="true"></span></span>
+                      <?php endif ?>
+                      <div class="text-break">
+                        <a href="<?php echo $esc($file['url']) ?>" target="_blank" rel="noopener"><?php echo $esc($file['name']) ?></a>
+                        <p class="podcast-episode-meta m-0 text-muted">
+                          <?php echo $esc($typeLabel) ?><span class="d-md-none"> · <?php echo $esc($this->formatSize($file['size'])) ?> · <?php echo $esc($date) ?></span>
+                        </p>
+                        <div class="d-md-none small"><?php echo $this->mediaUsageHtml($file, $labels, $deletable) ?></div>
+                      </div>
+                    </div>
+                  </td>
+                  <td class="pt-3 d-none d-md-table-cell small"><?php echo $this->mediaUsageHtml($file, $labels, $deletable) ?></td>
+                  <td class="pt-3 text-right text-nowrap d-none d-md-table-cell"><?php echo $esc($this->formatSize($file['size'])) ?></td>
+                  <td class="pt-3 text-nowrap d-none d-lg-table-cell"><?php echo $esc($date) ?></td>
+                  <td class="pt-3 text-center align-middle">
+                    <div class="dropdown actionsDropdown">
+                      <button class="btn btn-link text-secondary p-1 actionsDropdownToggle" type="button"
+                              data-toggle="dropdown" data-boundary="viewport" aria-haspopup="true" aria-expanded="false"
+                              title="<?php echo $this->html('actions') ?>"
+                              aria-label="<?php echo $this->html('actions-for', ['title' => $file['name']]) ?>">
+                        <i class="fa fa-bars"></i>
+                      </button>
+                      <div class="dropdown-menu dropdown-menu-right">
+                        <a class="dropdown-item" target="_blank" rel="noopener" href="<?php echo $esc($file['url']) ?>">
+                          <i class="fa fa-external-link fa-fw mr-2"></i><?php echo $this->html('media-open') ?>
+                        </a>
+                        <?php if ($deletable): ?>
+                        <div class="dropdown-divider"></div>
+                        <a href="#" class="dropdown-item text-danger podcast-media-delete-one" role="button">
+                          <i class="fa fa-trash fa-fw mr-2"></i><?php echo $this->html('delete') ?>
+                        </a>
+                        <?php endif ?>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+                <?php endforeach ?>
+              </tbody>
+            </table>
+          <?php endif ?>
+        </div>
+        <?php
+        return ob_get_clean();
+    }
+
+    /** Verwendung einer Datei als HTML (eine Zeile je Verwendung) bzw. Badge „Unbenutzt“. */
+    private function mediaUsageHtml(array $file, array $labels, $deletable) {
+        if ($labels) {
+            return implode('<br>', array_map(function ($label) {
+                return htmlspecialchars($label, ENT_QUOTES);
+            }, $labels));
+        }
+        return '<span class="badge ' . ($deletable ? 'badge-warning' : 'badge-info') . '">'
+            . ($deletable ? $this->html('media-unused') : $this->html('media-recent')) . '</span>';
+    }
+
+    /**
+     * Dialog „Aus Mediathek wählen“ (Roadmap 025). Die Liste lädt das Skript
+     * erst beim Öffnen über list_media; Einträge baut es per textContent.
+     */
+    private function renderMediaPicker() {
+        ob_start();
+        ?>
+        <div class="modal fade" id="podcast-media-picker" tabindex="-1" role="dialog" aria-labelledby="podcast-picker-title" aria-hidden="true"
+             data-api-url="<?php echo htmlspecialchars(DOMAIN_ADMIN . 'plugin/podcast?podcast_api=1', ENT_QUOTES) ?>">
+          <div class="modal-dialog modal-dialog-scrollable modal-lg" role="document">
+            <div class="modal-content">
+              <div class="modal-header">
+                <h5 class="modal-title" id="podcast-picker-title"><?php echo $this->html('from-media') ?></h5>
+                <button type="button" class="close" data-dismiss="modal" aria-label="<?php echo $this->html('picker-close') ?>">
+                  <span aria-hidden="true">&times;</span>
+                </button>
+              </div>
+              <div class="modal-body">
+                <input type="search" class="form-control mb-2" id="podcast-picker-search" autocomplete="off"
+                       placeholder="<?php echo $this->html('picker-search') ?>" aria-label="<?php echo $this->html('picker-search') ?>">
+                <div class="form-check mb-2">
+                  <input class="form-check-input" type="checkbox" id="podcast-picker-unused">
+                  <label class="form-check-label" for="podcast-picker-unused"><?php echo $this->html('media-only-unused') ?></label>
+                </div>
+                <p class="text-muted small mb-2" id="podcast-picker-status" role="status"></p>
+                <div class="list-group" id="podcast-picker-list"></div>
+                <button type="button" class="btn btn-link btn-sm mt-2 px-0" id="podcast-picker-more" hidden><?php echo $this->html('picker-more') ?></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * Mediendateien einer Art für den Auswahldialog, neueste zuerst. Für das
+     * Kanal-Cover ($purpose 'cover') mit Hinweis bei ungeeigneten Bildern.
+     */
+    private function handleListMedia($type, $purpose) {
+        if (!is_string($type) || !isset(self::MEDIA_DIRS[$type])) {
+            return ['error' => $this->text('error-unknown-action')];
+        }
+        $usage = $this->mediaUsage();
+        $files = [];
+        foreach ($this->mediaFiles() as $file) {
+            if ($file['type'] !== $type) {
+                continue;
+            }
+            $uses  = $usage[$file['ref']] ?? [];
+            $entry = [
+                'name'   => $file['name'],
+                'url'    => $file['url'],
+                'size'   => $this->formatSize($file['size']),
+                'date'   => date($this->text('datetime-format'), $file['mtime']),
+                'uses'   => array_map([$this, 'mediaUseLabel'], $uses),
+                'unused' => $uses === [],
+            ];
+            if ($purpose === 'cover' && $type === 'image') {
+                $problems = $this->coverProblems($this->mediaPath('image', $file['name']));
+                if ($problems) {
+                    $entry['problems'] = $this->text('cover-mismatch', ['problems' => implode(' ', $problems)]);
+                }
+            }
+            $files[] = $entry;
+        }
+        return ['success' => true, 'files' => $files];
+    }
+
+    private function renderEpisodeForm($apiUrl = '', array $suggest = ['episode' => '1', 'season' => '']) {
+        $limits = $this->uploadLimits();
+        // Adresse des Upload-Ordners: Dateien dort zeigt das Formular als Auswahl aus der Mediathek
+        $mediaPrefix = DOMAIN_UPLOADS . 'podcast/';
+        ob_start();
+        ?>
+        <div id="podcast-episode-form" hidden
+             data-next-episode="<?php echo htmlspecialchars($suggest['episode'], ENT_QUOTES) ?>"
+             data-next-season="<?php echo htmlspecialchars($suggest['season'], ENT_QUOTES) ?>">
           <!-- Aktionen oben rechts neben dem Titel wie in Bludits eigenen Formularen
                (views/settings.php, edit-user.php: float-right, btn-sm) -->
           <div class="align-middle clearfix">
@@ -1008,7 +1256,11 @@ class Podcast extends Plugin {
 
           <div class="form-group">
             <label for="pe-duration"><?php echo $this->html('duration') ?></label>
-            <input type="text" class="form-control" id="pe-duration" placeholder="00:45:00">
+            <input type="text" class="form-control" id="pe-duration" placeholder="00:45:00" aria-describedby="pe-duration-hint">
+            <small class="form-text text-muted" id="pe-duration-hint" hidden>
+              <span id="pe-duration-hint-text"></span>
+              <button type="button" class="btn btn-link btn-sm p-0 align-baseline" id="pe-duration-apply" hidden><?php echo $this->html('js-duration-apply') ?></button>
+            </small>
           </div>
 
           <div class="form-group">
@@ -1022,6 +1274,10 @@ class Podcast extends Plugin {
                 <input class="form-check-input" type="radio" name="pe-image-mode" id="pe-image-mode-file" value="file">
                 <label class="form-check-label" for="pe-image-mode-file"><?php echo $this->html('upload-file') ?></label>
               </div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="pe-image-mode" id="pe-image-mode-media" value="media">
+                <label class="form-check-label" for="pe-image-mode-media"><?php echo $this->html('from-media') ?></label>
+              </div>
             </div>
             <input type="text" class="form-control mt-2" id="pe-image-url" placeholder="https://..."
                    inputmode="url" aria-labelledby="pe-image-label">
@@ -1030,7 +1286,19 @@ class Podcast extends Plugin {
               <label class="custom-file-label" for="pe-image-file" data-browse="<?php echo $this->html('browse') ?>"
                      data-placeholder="<?php echo $this->html('choose-image') ?>"><?php echo $this->html('choose-image') ?></label>
             </div>
+            <?php /* hidden außen: d-flex (display: flex !important) würde es sonst überstimmen */ ?>
+            <div id="pe-image-media-wrap" hidden
+                 data-prefix="<?php echo htmlspecialchars($mediaPrefix . 'images/', ENT_QUOTES) ?>">
+              <div class="mt-2 d-flex align-items-center">
+                <button type="button" class="btn btn-outline-secondary btn-sm text-nowrap" id="pe-image-media-btn"><?php echo $this->html('media-choose') ?></button>
+                <span class="ml-2 text-break small" id="pe-image-media-name"></span>
+                <input type="hidden" id="pe-image-media" value="">
+              </div>
+            </div>
             <img id="pe-image-preview" class="mt-2 border rounded" alt="<?php echo $this->html('image-preview-alt') ?>" hidden>
+            <?php if ($limits['enabled']): ?>
+            <small class="form-text text-muted" id="pe-image-limit"><?php echo $this->html('image-limit', ['size' => $this->formatMB($limits['file'])]) ?></small>
+            <?php endif ?>
           </div>
 
           <div class="form-group">
@@ -1044,6 +1312,10 @@ class Podcast extends Plugin {
                 <input class="form-check-input" type="radio" name="pe-audio-mode" id="pe-audio-mode-file" value="file">
                 <label class="form-check-label" for="pe-audio-mode-file"><?php echo $this->html('upload-file') ?></label>
               </div>
+              <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="pe-audio-mode" id="pe-audio-mode-media" value="media">
+                <label class="form-check-label" for="pe-audio-mode-media"><?php echo $this->html('from-media') ?></label>
+              </div>
             </div>
             <input type="text" class="form-control mt-2" id="pe-audio-url" placeholder="https://..."
                    inputmode="url" aria-labelledby="pe-audio-label">
@@ -1052,22 +1324,37 @@ class Podcast extends Plugin {
               <label class="custom-file-label" for="pe-audio-file" data-browse="<?php echo $this->html('browse') ?>"
                      data-placeholder="<?php echo $this->html('choose-audio') ?>"><?php echo $this->html('choose-audio') ?></label>
             </div>
+            <?php /* hidden außen: d-flex (display: flex !important) würde es sonst überstimmen */ ?>
+            <div id="pe-audio-media-wrap" hidden
+                 data-prefix="<?php echo htmlspecialchars($mediaPrefix . 'audio/', ENT_QUOTES) ?>">
+              <div class="mt-2 d-flex align-items-center">
+                <button type="button" class="btn btn-outline-secondary btn-sm text-nowrap" id="pe-audio-media-btn"><?php echo $this->html('media-choose') ?></button>
+                <span class="ml-2 text-break small" id="pe-audio-media-name"></span>
+                <input type="hidden" id="pe-audio-media" value="">
+              </div>
+            </div>
             <div class="alert alert-warning small py-2 px-3 mt-2 mb-0" id="pe-audio-format-hint" role="status" hidden>
               <?php echo $this->html('audio-format-hint') ?>
             </div>
+            <div class="mt-2" id="pe-upload-progress" hidden>
+              <div class="progress">
+                <div class="progress-bar" id="pe-upload-progress-bar" role="progressbar" style="width: 0%"
+                     aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></div>
+              </div>
+              <div class="d-flex align-items-center mt-1">
+                <small class="text-muted mr-auto" id="pe-upload-progress-text" role="status"></small>
+                <button type="button" class="btn btn-link btn-sm p-0" id="pe-upload-cancel"><?php echo $this->html('js-upload-cancel') ?></button>
+              </div>
+            </div>
             <small class="form-text text-muted" id="pe-upload-limit"
                    data-max-file="<?php echo (int) $limits['file'] ?>"
-                   data-max-post="<?php echo (int) $limits['post'] ?>">
+                   data-max-post="<?php echo (int) $limits['post'] ?>"
+                   data-max-audio="<?php echo (int) $limits['plugin'] ?>"
+                   data-chunk-size="<?php echo (int) $limits['chunk'] ?>">
               <?php if (!$limits['enabled']): ?>
                 <?php echo $this->html('uploads-disabled', [], ['setting' => '<code>file_uploads = Off</code>']) ?>
               <?php else: ?>
-                <?php echo $this->html('upload-limit', ['size' => $this->formatMB($limits['file'])]) ?>
-                <?php if ($limits['server']): ?>
-                <?php echo $this->html('upload-limit-server', ['plugin' => $this->formatMB($limits['plugin'])], [
-                    'file' => '<code>upload_max_filesize = ' . htmlspecialchars((string) ini_get('upload_max_filesize'), ENT_QUOTES) . '</code>',
-                    'post' => '<code>post_max_size = ' . htmlspecialchars((string) ini_get('post_max_size'), ENT_QUOTES) . '</code>',
-                ]) ?>
-                <?php endif ?>
+                <?php echo $this->html('upload-limit', ['size' => $this->formatMB($limits['plugin'])]) ?>
               <?php endif ?>
             </small>
           </div>
@@ -1094,7 +1381,160 @@ class Podcast extends Plugin {
 
         </div>
         <?php
+        echo $this->renderMediaPicker();
+        echo $this->renderAskDialog();
         return ob_get_clean();
+    }
+
+    /**
+     * Ja/Nein-Frage für das Skript (askYesNo()): confirm() kennt nur „OK“ und
+     * „Abbrechen“, das klingt bei „Datei ebenfalls löschen?“ nach Abbruch des
+     * Speicherns. Die Frage setzt das Skript per textContent.
+     */
+    private function renderAskDialog() {
+        ob_start();
+        ?>
+        <div class="modal fade" id="podcast-ask" tabindex="-1" role="dialog" aria-labelledby="podcast-ask-text" aria-hidden="true">
+          <div class="modal-dialog modal-dialog-centered" role="document">
+            <div class="modal-content">
+              <div class="modal-body" id="podcast-ask-text"></div>
+              <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="podcast-ask-no" data-dismiss="modal"><?php echo $this->html('ask-no') ?></button>
+                <button type="button" class="btn btn-danger" id="podcast-ask-yes"><?php echo $this->html('ask-yes') ?></button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <?php
+        return ob_get_clean();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // FEED-CHECK (Roadmap 044)
+    // ═══════════════════════════════════════════════════════════════════
+
+    /** Höchstens so viele Episoden nennt ein Hinweis einzeln. */
+    private const FEED_CHECK_LIST = 5;
+
+    /**
+     * Hinweise, bevor der Feed eingereicht wird (nur Text, nichts wird
+     * blockiert). Episoden: Feld title, type (Bludit-Seitentyp), date (für die
+     * Anzeige), dateRaw, audio (bool). Kanal: email, desc, author, cover
+     * (nutzbare Cover-Adresse), coverProblems.
+     * @return array{episodes: array<int, array{text: string, field: string}>, channel: array<int, array{text: string, field: string}>}
+     */
+    private function feedProblemsFrom(array $episodes, array $channel) {
+        $public    = ['published', 'sticky', 'static'];
+        $inFeed    = 0;
+        $waiting   = [];
+        $noAudio   = [];
+        foreach ($episodes as $ep) {
+            $title = $ep['title'] !== '' ? $ep['title'] : $this->text('untitled-episode');
+            if (in_array($ep['type'], $public, true)) {
+                if ($ep['audio']) {
+                    $inFeed++;
+                } else {
+                    $noAudio[] = $title;
+                }
+            } elseif ($ep['type'] === 'scheduled' || $ep['type'] === 'draft') {
+                $waiting[] = ['title' => $title, 'type' => $ep['type'], 'date' => $ep['date'], 'dateRaw' => $ep['dateRaw']];
+            }
+        }
+
+        $hints = ['episodes' => [], 'channel' => []];
+        $add   = function ($area, $text, $field = '') use (&$hints) {
+            $hints[$area][] = ['text' => $text, 'field' => $field];
+        };
+        if ($inFeed === 0) {
+            $add('episodes', $this->text('check-no-episode'));
+            // Geplante zuerst (nach Datum), dann Entwürfe
+            usort($waiting, function ($a, $b) {
+                return ($a['type'] === 'draft') <=> ($b['type'] === 'draft') ?: strcmp($a['dateRaw'], $b['dateRaw']);
+            });
+            foreach (array_slice($waiting, 0, self::FEED_CHECK_LIST) as $ep) {
+                $add('episodes', $ep['type'] === 'scheduled'
+                    ? $this->text('check-scheduled', ['title' => $ep['title'], 'date' => $ep['date']])
+                    : $this->text('check-draft', ['title' => $ep['title']]));
+            }
+        }
+        foreach (array_slice($noAudio, 0, self::FEED_CHECK_LIST) as $title) {
+            $add('episodes', $this->text('check-no-audio', ['title' => $title]));
+        }
+        if (count($noAudio) > self::FEED_CHECK_LIST) {
+            $add('episodes', $this->text('check-more', ['count' => count($noAudio) - self::FEED_CHECK_LIST]));
+        }
+
+        $email = trim($channel['email']);
+        if ($email === '') {
+            $add('channel', $this->text('check-email-missing'), 'email');
+        } elseif (filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+            $add('channel', $this->text('check-email-invalid'), 'email');
+        }
+        if (trim($channel['desc']) === '') {
+            $add('channel', $this->text('check-desc-missing'), 'feedDesc');
+        }
+        if (trim($channel['author']) === '') {
+            $add('channel', $this->text('check-author-missing'), 'author');
+        }
+        if ($channel['cover'] === '') {
+            $add('channel', $this->text('check-cover-missing', ['min' => self::COVER_MIN_PX, 'max' => self::COVER_MAX_PX]), 'cover');
+        } elseif ($channel['coverProblems']) {
+            $add('channel', $this->text('check-cover-problems', ['problems' => implode(' ', $channel['coverProblems'])]), 'cover');
+        }
+        return $hints;
+    }
+
+    /** Feed-Check mit den Daten dieser Website. */
+    private function feedProblems(?array $episodes = null) {
+        $items = [];
+        foreach ($episodes ?? $this->getEpisodes() as $page) {
+            $meta    = $this->getEpisodeMeta($page);
+            $items[] = [
+                'title'   => $this->plainTitle($page),
+                'type'    => (string) $page->type(),
+                'date'    => (string) $page->date($this->text('datetime-format')),
+                'dateRaw' => (string) $page->dateRaw(),
+                'audio'   => ($meta['audio_url'] ?? '') !== '',
+            ];
+        }
+        $cover = $this->coverUrl();
+        $path  = $cover !== '' ? $this->localImagePath($cover) : '';
+        return $this->feedProblemsFrom($items, [
+            'email'         => $this->setting('email'),
+            'desc'          => $this->setting('feedDesc'),
+            'author'        => $this->setting('author'),
+            'cover'         => $cover,
+            'coverProblems' => $path !== '' ? $this->coverProblems($path) : [],
+        ]);
+    }
+
+    /**
+     * Kasten mit den Hinweisen. $inSettings: Links springen zum Feld auf
+     * derselben Seite, sonst in die Kanaleinstellungen ($withChannel: nur
+     * für Admins, Redakteure können den Kanal nicht ändern).
+     */
+    private function renderFeedCheck(array $hints, $inSettings, $withChannel = true) {
+        $items = $hints['episodes'];
+        if ($withChannel) {
+            $items = array_merge($items, $hints['channel']);
+        }
+        if (!$items) {
+            return $inSettings
+                ? '<div class="alert alert-success" role="status" id="podcast-feed-check">' . $this->html('check-ready') . '</div>'
+                : '';
+        }
+        $html = '<div class="alert alert-warning" role="status" id="podcast-feed-check">'
+            . '<strong>' . $this->html('check-title') . '</strong><ul class="mb-0 mt-1 pl-3">';
+        foreach ($items as $item) {
+            $html .= '<li>' . htmlspecialchars($item['text'], ENT_QUOTES);
+            if ($item['field'] !== '') {
+                $href  = ($inSettings ? '' : HTML_PATH_ADMIN_ROOT . 'configure-plugin/Podcast') . '#podcast-' . $item['field'];
+                $html .= ' <a href="' . htmlspecialchars($href, ENT_QUOTES) . '">'
+                    . ($inSettings ? $this->html('check-fix') : $this->html('check-fix-settings')) . '</a>';
+            }
+            $html .= '</li>';
+        }
+        return $html . '</ul></div>';
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1111,9 +1551,20 @@ class Podcast extends Plugin {
                 case 'save_episode':
                     return $this->handleSaveEpisode($_POST, $_FILES);
                 case 'delete_episode':
-                    return $this->handleDeleteEpisode($this->postString($_POST, 'episode_key'));
+                    return $this->handleDeleteEpisode($this->postString($_POST, 'episode_key'),
+                        $this->postString($_POST, 'delete_files') === '1');
                 case 'upload_cover':
                     return $this->handleCoverUpload($_FILES);
+                case 'upload_chunk':
+                    return $this->handleChunkUpload($_POST, $_FILES);
+                case 'upload_cancel':
+                    return $this->handleChunkCancel($this->postString($_POST, 'upload_id'));
+                case 'discard_upload':
+                    return $this->handleDiscardUpload($this->postString($_POST, 'url'));
+                case 'delete_media':
+                    return $this->handleDeleteMedia($_POST['files'] ?? null);
+                case 'list_media':
+                    return $this->handleListMedia($this->postString($_POST, 'type'), $this->postString($_POST, 'purpose'));
                 default:
                     return ['error' => $this->text('error-unknown-action')];
             }
@@ -1225,9 +1676,12 @@ class Podcast extends Plugin {
             return ['error' => $this->text('error-audio-url')];
         }
 
-        $duration = $this->postString($post, 'duration');
-        if ($duration !== '' && !$this->isValidDuration($duration)) {
-            return ['error' => $this->text('error-duration')];
+        $duration = trim($this->postString($post, 'duration'));
+        if ($duration !== '') {
+            $duration = $this->normalizeDuration($duration);
+            if ($duration === null) {
+                return ['error' => $this->text('error-duration')];
+            }
         }
 
         // Episodenbild
@@ -1326,6 +1780,17 @@ class Podcast extends Plugin {
             'custom'  => $this->customFieldArgs($page, $meta),
         ];
 
+        // Bisherige Dateien, falls sie ersetzt und auf Wunsch gelöscht werden (Roadmap 025)
+        $before   = $page ? $this->getEpisodeMeta($page) : [];
+        $replaced = isset($post['delete_replaced']) && is_array($post['delete_replaced']) ? $post['delete_replaced'] : [];
+        $oldFiles = [];
+        foreach (['audio' => 'audio_url', 'image' => 'itunes_image'] as $kind => $field) {
+            $old = $before[$field] ?? '';
+            if (in_array($kind, $replaced, true) && $old !== '' && $old !== $meta[$field]) {
+                $oldFiles[] = $this->ownMediaRef($old);
+            }
+        }
+
         // Über Bludits createPage()/editPage(): setzen den Autor, indizieren Tags
         // und Kategorien neu, lösen die Hooks aus (u. a. Core-RSS, Sitemap) und
         // schreiben ins Systemlog
@@ -1351,6 +1816,17 @@ class Podcast extends Plugin {
             return ['error' => $this->text('error-save-failed')];
         }
         $result = ['success' => true, 'key' => $newKey];
+        if ($oldFiles) {
+            $result['deletedFiles'] = $this->deleteUnusedMedia($oldFiles);
+        }
+        $savedName = $this->uploadedAudioName($audioUrl);
+        if ($savedName !== '') {
+            $this->setPendingUploads(array_diff($this->pendingUploads(), [$savedName]));
+        }
+        $duplicate = $this->duplicateEpisode($this->episodeNumberItems($this->getEpisodes()), $episodeNum, $seasonNum, $newKey);
+        if ($duplicate !== null) {
+            $warning = trim($warning . ' ' . $this->text('warning-duplicate-number', ['number' => (int) $episodeNum, 'title' => $duplicate]));
+        }
         if ($imageProblems) {
             $warning = trim($warning . ' ' . $this->text('warning-image', ['problems' => implode(' ', $imageProblems)]));
         }
@@ -1360,7 +1836,7 @@ class Podcast extends Plugin {
         return $result;
     }
 
-    private function handleDeleteEpisode($key) {
+    private function handleDeleteEpisode($key, $deleteFiles = false) {
         global $pages;
 
         if (!$key) {
@@ -1384,11 +1860,16 @@ class Podcast extends Plugin {
             return ['error' => $this->text('error-has-children')];
         }
 
+        // Eigene Dateien merken; nach dem Löschen nur entfernen, wenn sie
+        // keine andere Seite und nicht das Kanal-Cover verwendet (Roadmap 025)
+        $meta  = $this->getEpisodeMeta($page);
+        $files = [$this->ownMediaRef($meta['audio_url'] ?? ''), $this->ownMediaRef($meta['itunes_image'] ?? '')];
+
         if (!deletePage($key)) {
             return ['error' => $this->text('error-delete-failed')];
         }
 
-        return ['success' => true];
+        return ['success' => true, 'deletedFiles' => $deleteFiles ? $this->deleteUnusedMedia($files) : 0];
     }
 
     /**
@@ -1406,10 +1887,20 @@ class Podcast extends Plugin {
                 $perFile = min($perFile, $serverLimit);
             }
         }
+        // Stückgröße für Audio (Roadmap 020): passt unter beide PHP-Limits,
+        // mit Reserve für die übrigen Felder der Anfrage
+        $chunk = self::CHUNK_SIZE;
+        if ($file > 0) {
+            $chunk = min($chunk, $file);
+        }
+        if ($post > 0) {
+            $chunk = min($chunk, $post - 65536);
+        }
         return [
             'file'    => $perFile,
             'post'    => max(0, $post),
             'plugin'  => $plugin,
+            'chunk'   => max(65536, $chunk),
             'server'  => $perFile < $plugin,
             'enabled' => (bool) ini_get('file_uploads'),
         ];
@@ -1498,6 +1989,14 @@ class Podcast extends Plugin {
      * Bytes als MB mit höchstens einer Nachkommastelle und dem Dezimalzeichen
      * der Sprache, z. B. „2“ oder „0,5“.
      */
+    /** Dateigröße für die Medienliste: unter 1 MB in KB, sonst in MB. */
+    private function formatSize($bytes) {
+        if ($bytes < 1048576) {
+            return $this->text('size-kb', ['size' => max(1, (int) ceil($bytes / 1024))]);
+        }
+        return $this->text('size-mb', ['size' => $this->formatMB($bytes)]);
+    }
+
     private function formatMB($bytes) {
         $mb = number_format($bytes / 1048576, 1, '.', '');
         $mb = substr($mb, -2) === '.0' ? substr($mb, 0, -2) : $mb;
@@ -1536,6 +2035,247 @@ class Podcast extends Plugin {
         }
     }
 
+    // ── Medienverwaltung (Roadmap 025)
+
+    /** Upload-Ordner je Art (unter uploads/podcast/). */
+    private const MEDIA_DIRS = ['audio' => 'audio', 'image' => 'images'];
+
+    /**
+     * So lange (Sekunden) nach dem Hochladen ist eine unbenutzte Datei nicht
+     * löschbar: Sie kann gerade in einem anderen Formular hochgeladen und noch
+     * nicht gespeichert sein.
+     */
+    private const MEDIA_GRACE = 3600;
+
+    /** Gültiger Dateiname einer Mediendatei (erlaubte Endung, keine Schutzdatei), sonst ''. */
+    private function mediaName($type, $name) {
+        if (!is_string($type) || !isset(self::MEDIA_DIRS[$type]) || !is_string($name)
+            || preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]*$/D', $name) !== 1) {
+            return '';
+        }
+        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        return isset(self::UPLOAD_TYPES[$type][$ext]) ? $name : '';
+    }
+
+    /** Pfad einer Mediendatei, per realpath() im Upload-Ordner geprüft, sonst ''. */
+    private function mediaPath($type, $name) {
+        if ($this->mediaName($type, $name) === '') {
+            return '';
+        }
+        $base = PATH_UPLOADS . 'podcast' . DS . self::MEDIA_DIRS[$type];
+        $dir  = realpath($base);
+        $file = realpath($base . DS . $name);
+        if ($dir === false || $file === false || strpos($file, $dir . DS) !== 0 || !is_file($file) || is_link($base . DS . $name)) {
+            return '';
+        }
+        return $file;
+    }
+
+    /** URL einer Mediendatei. */
+    private function mediaUrl($type, $name) {
+        return DOMAIN_UPLOADS . 'podcast/' . self::MEDIA_DIRS[$type] . '/' . $name;
+    }
+
+    /**
+     * Alle Mediendateien, neueste zuerst.
+     * @return array<int, array{type: string, name: string, ref: string, url: string, size: int, mtime: int}>
+     */
+    private function mediaFiles() {
+        $files = [];
+        foreach (self::MEDIA_DIRS as $type => $folder) {
+            $dir = PATH_UPLOADS . 'podcast' . DS . $folder . DS;
+            foreach (is_dir($dir) ? (scandir($dir) ?: []) : [] as $name) {
+                $path = $this->mediaPath($type, $name);
+                if ($path === '') {
+                    continue;
+                }
+                $files[] = ['type' => $type, 'name' => $name, 'ref' => $type . '/' . $name,
+                    'url' => $this->mediaUrl($type, $name), 'size' => (int) filesize($path), 'mtime' => (int) filemtime($path)];
+            }
+        }
+        usort($files, function ($a, $b) {
+            return $b['mtime'] <=> $a['mtime'] ?: strcmp($a['name'], $b['name']);
+        });
+        return $files;
+    }
+
+    /**
+     * Verweise auf Mediendateien in einem Text: „podcast/audio/<name>“ bzw.
+     * „podcast/images/<name>“, egal mit welcher Domain davor.
+     * @return string[] z. B. ['audio/folge-1.mp3', 'image/cover.png']
+     */
+    private function mediaRefs($text) {
+        if (!is_string($text) || $text === '') {
+            return [];
+        }
+        preg_match_all('#podcast/(audio|images)/([A-Za-z0-9][A-Za-z0-9._-]*)#', $text, $m, PREG_SET_ORDER);
+        $refs = [];
+        foreach ($m as $match) {
+            $type = $match[1] === 'audio' ? 'audio' : 'image';
+            if ($this->mediaName($type, $match[2]) !== '') {
+                $refs[] = $type . '/' . $match[2];
+            }
+        }
+        return array_values(array_unique($refs));
+    }
+
+    /** Verweis auf eine Datei dieser Website (genau unter DOMAIN_UPLOADS), sonst ''. */
+    private function ownMediaRef($url) {
+        if (!is_string($url) || strpos($url, DOMAIN_UPLOADS . 'podcast/') !== 0) {
+            return '';
+        }
+        foreach (self::MEDIA_DIRS as $type => $folder) {
+            $prefix = DOMAIN_UPLOADS . 'podcast/' . $folder . '/';
+            if (strpos($url, $prefix) === 0 && $this->mediaName($type, substr($url, strlen($prefix))) !== '') {
+                return $type . '/' . substr($url, strlen($prefix));
+            }
+        }
+        return '';
+    }
+
+    /**
+     * Verwendung je Datei aus Seitendaten (siehe mediaUsage()).
+     * @param array<string, array{title: string, audio: string, image: string, text: string}> $pagesData
+     * @return array<string, array<int, array{kind: string, title: string, key: string}>>
+     */
+    private function mediaUsageFrom(array $pagesData, $cover) {
+        $usage = [];
+        foreach ($this->mediaRefs($cover) as $ref) {
+            $usage[$ref][] = ['kind' => 'cover', 'title' => '', 'key' => ''];
+        }
+        foreach ($pagesData as $key => $page) {
+            $seen = [];
+            foreach (['audio', 'image', 'text'] as $field) {
+                foreach ($this->mediaRefs($page[$field]) as $ref) {
+                    if (isset($seen[$ref])) {
+                        continue;
+                    }
+                    $seen[$ref] = true;
+                    $usage[$ref][] = ['kind' => $field === 'text' ? 'content' : $field,
+                        'title' => $page['title'], 'key' => (string) $key];
+                }
+            }
+        }
+        return $usage;
+    }
+
+    /**
+     * Wo die Mediendateien verwendet werden. Bewusst großzügig, damit nichts
+     * Benutztes gelöscht wird: Kanal-Cover, Audio und Episodenbild jeder Seite
+     * (auch ohne Tag „podcast“, Entwürfe) sowie jede Erwähnung im Inhalt,
+     * Titelbild oder in anderen Feldern einer Seite.
+     */
+    private function mediaUsage() {
+        global $pages;
+
+        $data = [];
+        foreach ($pages->getDB(false) as $key => $fields) {
+            $page = new Page($key);
+            $data[$key] = [
+                'title' => $this->plainTitle($page),
+                'audio' => is_string($page->custom('podcast_audio_url')) ? $page->custom('podcast_audio_url') : '',
+                'image' => is_string($page->custom('podcast_image')) ? $page->custom('podcast_image') : '',
+                'text'  => (string) json_encode($fields, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . ' ' . (string) $page->contentRaw(),
+            ];
+        }
+        return $this->mediaUsageFrom($data, $this->setting('cover'));
+    }
+
+    /** Darf die Datei gelöscht werden? (unbenutzt und nicht gerade erst hochgeladen) */
+    private function mediaDeletable(array $file, array $usage) {
+        return empty($usage[$file['ref']]) && $file['mtime'] <= time() - self::MEDIA_GRACE;
+    }
+
+    /** Text zur Verwendung einer Datei, z. B. „Audio: Folge 3“. */
+    private function mediaUseLabel(array $use) {
+        $title = $use['title'] !== '' ? $use['title'] : $this->text('untitled-episode');
+        switch ($use['kind']) {
+            case 'cover':
+                return $this->text('media-used-cover');
+            case 'audio':
+                return $this->text('media-used-audio', ['title' => $title]);
+            case 'image':
+                return $this->text('media-used-image', ['title' => $title]);
+            default:
+                return $this->text('media-used-content', ['title' => $title]);
+        }
+    }
+
+    /**
+     * Löscht unbenutzte Mediendateien (Felder files[] = „audio/<name>“ bzw.
+     * „image/<name>“). Benutzte oder gerade hochgeladene bleiben.
+     */
+    private function handleDeleteMedia($files) {
+        if (!is_array($files) || $files === [] || count($files) > 1000) {
+            return ['error' => $this->text('error-media-none')];
+        }
+        $usage   = $this->mediaUsage();
+        $deleted = 0;
+        $kept    = 0;
+        foreach ($files as $ref) {
+            $parts = is_string($ref) ? explode('/', $ref, 2) : [];
+            $path  = count($parts) === 2 ? $this->mediaPath($parts[0], $parts[1]) : '';
+            if ($path === '' || !$this->mediaDeletable(['ref' => $ref, 'mtime' => (int) filemtime($path)], $usage)) {
+                $kept++;
+                continue;
+            }
+            if (@unlink($path)) {
+                $deleted++;
+            } else {
+                $kept++;
+                Log::set(__METHOD__ . LOG_SEP . 'Could not delete ' . $path);
+            }
+        }
+        $notice = $this->text('media-deleted', ['count' => $deleted]);
+        if ($kept > 0) {
+            $notice .= ' ' . $this->text('media-kept', ['count' => $kept]);
+        }
+        return ['success' => true, 'deleted' => $deleted, 'kept' => $kept, 'notice' => $notice];
+    }
+
+    /**
+     * Löscht eigene Dateien, die nach einer Änderung nirgends mehr verwendet
+     * werden (Episode gelöscht, Datei ersetzt). Liefert die Anzahl.
+     * @param string[] $refs
+     */
+    private function deleteUnusedMedia(array $refs) {
+        $refs = array_values(array_unique(array_filter($refs)));
+        if ($refs === []) {
+            return 0;
+        }
+        $usage   = $this->mediaUsage();
+        $deleted = 0;
+        foreach ($refs as $ref) {
+            $parts = explode('/', $ref, 2);
+            $path  = count($parts) === 2 ? $this->mediaPath($parts[0], $parts[1]) : '';
+            if ($path !== '' && empty($usage[$ref]) && @unlink($path)) {
+                $deleted++;
+            }
+        }
+        return $deleted;
+    }
+
+    /**
+     * Eigene Dateien einer Episode, die keine andere Seite und nicht das
+     * Kanal-Cover verwendet: ['audio' => ref|'', 'image' => ref|''].
+     */
+    private function episodeOwnMedia($page, array $usage) {
+        $meta = $this->getEpisodeMeta($page);
+        $own  = [];
+        foreach (['audio' => 'audio_url', 'image' => 'itunes_image'] as $kind => $field) {
+            $ref  = $this->ownMediaRef($meta[$field] ?? '');
+            $uses = $ref !== '' && isset($usage[$ref]) ? $usage[$ref] : [];
+            $only = $ref !== '';
+            foreach ($uses as $use) {
+                if ($use['key'] !== $page->key()) {
+                    $only = false;
+                }
+            }
+            $own[$kind] = $only ? $ref : '';
+        }
+        return $own;
+    }
+
     // Erlaubte Upload-Endungen je Typ und die per finfo akzeptierten MIME-Typen
     private const UPLOAD_TYPES = [
         'audio' => [
@@ -1559,9 +2299,17 @@ class Podcast extends Plugin {
         if (!isset($_FILES[$fileField]) || $_FILES[$fileField]['error'] !== UPLOAD_ERR_OK) {
             return '';
         }
+        return $this->storeFile($_FILES[$fileField], $type, true);
+    }
 
-        $file = $_FILES[$fileField];
-        $ext  = $this->validateUpload($file, $type);
+    /**
+     * Prüft eine Datei per validateUpload(), legt sie mit Zufallsnamen im
+     * Upload-Ordner ab und liefert ihre URL. $isUpload: per PHP hochgeladene
+     * Datei (move_uploaded_file), sonst eine zusammengesetzte Datei aus dem
+     * Workspace (rename).
+     */
+    private function storeFile(array $file, $type, $isUpload) {
+        $ext = $this->validateUpload($file, $type);
 
         $dir = PATH_UPLOADS . 'podcast' . DS . ($type === 'audio' ? 'audio' : 'images') . DS;
         if (!$this->prepareUploadDir($dir)) {
@@ -1574,12 +2322,187 @@ class Podcast extends Plugin {
             $filename = $baseName . '-' . bin2hex(random_bytes(8)) . '.' . $ext;
         } while (file_exists($dir . $filename));
 
-        if (!move_uploaded_file($file['tmp_name'], $dir . $filename)) {
-            Log::set(__METHOD__ . LOG_SEP . 'move_uploaded_file failed: ' . $dir . $filename);
+        $moved = $isUpload
+            ? move_uploaded_file($file['tmp_name'], $dir . $filename)
+            : rename($file['tmp_name'], $dir . $filename);
+        if (!$moved) {
+            Log::set(__METHOD__ . LOG_SEP . 'Could not move upload to ' . $dir . $filename);
             throw new RuntimeException($this->text('upload-move-failed'));
         }
 
         return DOMAIN_UPLOADS . 'podcast/' . ($type === 'audio' ? 'audio' : 'images') . '/' . $filename;
+    }
+
+    // ── Audio in Stücken hochladen (Roadmap 020)
+
+    /** Teil-Uploads, die so lange (Sekunden) unverändert liegen, werden gelöscht. */
+    private const CHUNK_MAX_AGE = 86400;
+    /** Größte Stückgröße, die das Skript wählt (Bytes). */
+    private const CHUNK_SIZE = 5242880;
+
+    /**
+     * Pfad der Teil-Datei im Workspace (nicht per HTTP erreichbar). Die
+     * Upload-ID kommt vom Browser; an die Sitzung gebunden, damit niemand an
+     * fremde Uploads anhängen kann. null bei ungültiger ID.
+     */
+    private function chunkPath($uploadId) {
+        if (!is_string($uploadId) || preg_match('/^[a-f0-9]{32}$/D', $uploadId) !== 1) {
+            return null;
+        }
+        return $this->workspace() . 'chunks' . DS . hash('sha256', session_id() . '|' . $uploadId) . '.part';
+    }
+
+    /** Löscht liegen gebliebene Teil-Uploads (abgebrochen, Browser geschlossen). */
+    private function removeStaleChunks($dir) {
+        foreach (glob($dir . '*.part') ?: [] as $part) {
+            $age = time() - (int) @filemtime($part);
+            if ($age > self::CHUNK_MAX_AGE) {
+                @unlink($part);
+            }
+        }
+    }
+
+    /**
+     * Nimmt ein Stück einer Audiodatei an (Felder upload_id, name, offset,
+     * total, Datei chunk). Die Stücke kommen der Reihe nach; das letzte prüft
+     * die ganze Datei wie einen normalen Upload und liefert ihre URL.
+     */
+    private function handleChunkUpload(array $post, array $files) {
+        $path   = $this->chunkPath($this->postString($post, 'upload_id'));
+        $name   = $this->postString($post, 'name');
+        $offset = filter_var($this->postString($post, 'offset'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+        $total  = filter_var($this->postString($post, 'total'), FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if ($path === null || $name === '' || $offset === false || $total === false) {
+            return ['error' => $this->text('error-chunk-invalid')];
+        }
+
+        $maxMB = (int) ($this->getValue('maxUploadMB') ?: 512);
+        if ($total > $maxMB * 1024 * 1024) {
+            return ['error' => $this->uploadText('audio', 'upload-too-large', ['limit' => $maxMB])];
+        }
+        $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+        if (!isset(self::UPLOAD_TYPES['audio'][$ext])) {
+            return ['error' => $this->uploadText('audio', 'upload-bad-extension',
+                ['allowed' => implode(', ', array_keys(self::UPLOAD_TYPES['audio']))])];
+        }
+
+        $chunk = $files['chunk'] ?? null;
+        $error = is_array($chunk) ? ($chunk['error'] ?? null) : null;
+        if (!is_int($error) || !is_string($chunk['tmp_name'] ?? null) || !is_int($chunk['size'] ?? null)) {
+            return ['error' => $this->uploadText('audio', 'upload-invalid')];
+        }
+        if ($error !== UPLOAD_ERR_OK) {
+            return ['error' => $this->uploadErrorMessage($error, 'audio')];
+        }
+        if (!is_uploaded_file($chunk['tmp_name']) || $chunk['size'] < 1 || $offset + $chunk['size'] > $total) {
+            return ['error' => $this->text('error-chunk-invalid')];
+        }
+
+        $dir = dirname($path) . DS;
+        if (!is_dir($dir) && !mkdir($dir, DIR_PERMISSIONS, true)) {
+            throw new RuntimeException($this->uploadText('audio', 'upload-dir-not-writable'));
+        }
+        if ($offset === 0) {
+            $this->removeStaleChunks($dir);
+        } else {
+            clearstatcache(true, $path);
+            if (!is_file($path) || filesize($path) !== $offset) {
+                return ['error' => $this->text('error-chunk-invalid')];
+            }
+        }
+
+        $out = fopen($path, $offset === 0 ? 'wb' : 'ab');
+        $in  = fopen($chunk['tmp_name'], 'rb');
+        $written = ($out && $in) ? stream_copy_to_stream($in, $out) : false;
+        if ($in) {
+            fclose($in);
+        }
+        if ($out) {
+            fclose($out);
+        }
+        if ($written !== $chunk['size']) {
+            @unlink($path);
+            Log::set(__METHOD__ . LOG_SEP . 'Could not write upload part in workspace.');
+            throw new RuntimeException($this->text('upload-cant-write'));
+        }
+
+        $received = $offset + $chunk['size'];
+        if ($received < $total) {
+            return ['success' => true, 'received' => $received];
+        }
+
+        // Vollständig: wie ein normaler Upload prüfen und ablegen
+        try {
+            $url = $this->storeFile(['name' => $name, 'tmp_name' => $path, 'size' => $received], 'audio', false);
+        } finally {
+            if (is_file($path)) {
+                @unlink($path);
+            }
+        }
+        $this->setPendingUploads(array_merge($this->pendingUploads(), [basename($url)]));
+        return ['success' => true, 'url' => $url];
+    }
+
+    /** Sitzungsschlüssel der hochgeladenen, noch nicht gespeicherten Audiodateien. */
+    private const PENDING_UPLOADS = 'podcast_pending_uploads';
+
+    /**
+     * Dateinamen der Audiodateien, die diese Sitzung hochgeladen, aber noch
+     * keiner Episode zugeordnet hat. Nur diese darf discard_upload löschen.
+     * @return string[]
+     */
+    private function pendingUploads() {
+        $list = $_SESSION[self::PENDING_UPLOADS] ?? [];
+        return is_array($list) ? array_values(array_filter($list, 'is_string')) : [];
+    }
+
+    /** Merkt sich höchstens die letzten 20 Dateinamen. */
+    private function setPendingUploads(array $names) {
+        $_SESSION[self::PENDING_UPLOADS] = array_slice(array_values(array_unique($names)), -20);
+    }
+
+    /** Dateiname einer Audio-URL dieser Website, sonst ''. */
+    private function uploadedAudioName($url) {
+        $prefix = DOMAIN_UPLOADS . 'podcast/audio/';
+        if (!is_string($url) || strpos($url, $prefix) !== 0) {
+            return '';
+        }
+        $name = substr($url, strlen($prefix));
+        return preg_match('/^[A-Za-z0-9._-]+$/D', $name) === 1 && $name[0] !== '.' ? $name : '';
+    }
+
+    /**
+     * Löscht eine in dieser Sitzung hochgeladene Audiodatei, die nie gespeichert
+     * wurde (andere Datei gewählt, Formular abgebrochen). Dateien, die eine
+     * Episode verwendet, bleiben.
+     */
+    private function handleDiscardUpload($url) {
+        $name    = $this->uploadedAudioName($url);
+        $pending = $this->pendingUploads();
+        if ($name === '' || !in_array($name, $pending, true)) {
+            return ['error' => $this->text('error-upload-not-found')];
+        }
+        $this->setPendingUploads(array_diff($pending, [$name]));
+        foreach ($this->getEpisodes() as $page) {
+            $meta = $this->getEpisodeMeta($page);
+            if (isset($meta['audio_url']) && $meta['audio_url'] === $url) {
+                return ['success' => true, 'deleted' => false];
+            }
+        }
+        $path = PATH_UPLOADS . 'podcast' . DS . 'audio' . DS . $name;
+        return ['success' => true, 'deleted' => is_file($path) && unlink($path)];
+    }
+
+    /** Verwirft einen abgebrochenen Teil-Upload. */
+    private function handleChunkCancel($uploadId) {
+        $path = $this->chunkPath($uploadId);
+        if ($path === null) {
+            return ['error' => $this->text('error-chunk-invalid')];
+        }
+        if (is_file($path)) {
+            @unlink($path);
+        }
+        return ['success' => true];
     }
 
     /**
@@ -1741,6 +2664,91 @@ class Podcast extends Plugin {
      */
     private function isValidDuration($value) {
         return is_string($value) && preg_match('/^(?:\d{1,6}|\d{1,3}:[0-5]\d|\d{1,3}:[0-5]\d:[0-5]\d)$/D', $value) === 1;
+    }
+
+    /**
+     * Dauer einheitlich als HH:MM:SS (Roadmap 021). Akzeptiert Sekunden, MM:SS
+     * und HH:MM:SS; liefert null bei ungültiger Eingabe.
+     */
+    private function normalizeDuration($value) {
+        if (!$this->isValidDuration($value)) {
+            return null;
+        }
+        $seconds = 0;
+        foreach (explode(':', $value) as $part) {
+            $seconds = $seconds * 60 + (int) $part;
+        }
+        return sprintf('%02d:%02d:%02d', intdiv($seconds, 3600), intdiv($seconds % 3600, 60), $seconds % 60);
+    }
+
+    /**
+     * Nummern der Episoden für Vorschlag und Doppel-Prüfung (Roadmap 023).
+     * @param Page[] $episodes
+     * @return array<int, array{key: string, title: string, episode: string, season: string, date: string}>
+     */
+    private function episodeNumberItems(array $episodes) {
+        $items = [];
+        foreach ($episodes as $page) {
+            $meta = $this->getEpisodeMeta($page);
+            $items[] = [
+                'key'     => (string) $page->key(),
+                'title'   => $this->plainTitle($page),
+                'episode' => isset($meta['itunes_episode']) ? (string) $meta['itunes_episode'] : '',
+                'season'  => isset($meta['itunes_season']) ? (string) $meta['itunes_season'] : '',
+                'date'    => (string) $page->dateRaw(),
+            ];
+        }
+        return $items;
+    }
+
+    /** Zahl als Vergleichswert ('' bleibt leer, „01“ = „1“). */
+    private function numberKey($value) {
+        $value = trim((string) $value);
+        return ctype_digit($value) ? (string) (int) $value : '';
+    }
+
+    /**
+     * Vorschlag für eine neue Episode: Staffel der neuesten Episode mit
+     * Nummer (nach Datum), Nummer = höchste Nummer in dieser Staffel + 1.
+     * @return array{episode: string, season: string}
+     */
+    private function suggestEpisodeNumbers(array $items) {
+        $newest = null;
+        foreach ($items as $item) {
+            if ($this->numberKey($item['episode']) === '') {
+                continue; // z. B. Trailer ohne Nummer
+            }
+            if ($newest === null || strcmp($item['date'], $newest['date']) > 0) {
+                $newest = $item;
+            }
+        }
+        $season = $newest !== null ? $this->numberKey($newest['season']) : '';
+        $max    = 0;
+        foreach ($items as $item) {
+            if ($this->numberKey($item['season']) === $season && $this->numberKey($item['episode']) !== '') {
+                $max = max($max, (int) $item['episode']);
+            }
+        }
+        return ['episode' => (string) ($max + 1), 'season' => $season];
+    }
+
+    /**
+     * Titel einer anderen Episode mit derselben Nummer in derselben Staffel,
+     * sonst null. Episoden ohne Nummer werden nicht verglichen.
+     */
+    private function duplicateEpisode(array $items, $episode, $season, $exceptKey) {
+        $episode = $this->numberKey($episode);
+        $season  = $this->numberKey($season);
+        if ($episode === '') {
+            return null;
+        }
+        foreach ($items as $item) {
+            if ($item['key'] !== $exceptKey && $this->numberKey($item['episode']) === $episode
+                && $this->numberKey($item['season']) === $season) {
+                return $item['title'];
+            }
+        }
+        return null;
     }
 
     // Version des mitgelieferten Podlove Web Players (player/SOURCE.md)

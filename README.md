@@ -7,8 +7,8 @@ Run a podcast with [Bludit](https://www.bludit.com): manage episodes in the admi
 ## Features
 
 - **Episodes are regular Bludit pages** with the tag `podcast`, so they work with your theme, categories, tags and the Bludit editor. Episode details (number, season, type, duration, audio, artwork) are stored as Bludit custom fields.
-- **Admin page** to create, edit and delete episodes – drafts and scheduled episodes included. Upload audio and episode artwork or link external files; uploads are checked for size, file type and content. Matches the Bludit admin look and works on phones.
-- **Channel settings** with a cover upload that checks Apple's requirements, the Apple Podcasts category list, podcast type and links to your podcast on Apple Podcasts, Spotify, Pocket Casts, Deezer and Castbox.
+- **Admin page** to create, edit and delete episodes – drafts and scheduled episodes included. Upload audio and episode artwork or link external files; large audio files are uploaded in parts with a progress bar, also with PHP's default limits, and all uploads are checked for size, file type and content. The duration is read from the audio file and the next episode number is suggested. A media page shows all uploads with their usage, deletes unused files and lets you reuse them. Matches the Bludit admin look and works on phones.
+- **Channel settings** with a cover upload that checks Apple's requirements, the Apple Podcasts category list, podcast type and links to your podcast on Apple Podcasts, Spotify, Pocket Casts, Deezer and Castbox. A feed check shows what is still missing before you submit the feed to Apple Podcasts or Spotify.
 - **RSS feed** at `/podcast.xml` (configurable) with iTunes tags, show notes as HTML, file sizes of external audio files and Podcasting 2.0 tags (`podcast:guid`, `podcast:locked`).
 - **Player on episode pages:** Podlove Web Player 5 served from your own server – no CDN, no third-party requests – with a subscribe button for podcast apps and services, or a simple HTML5 player.
 - **English and German:** the admin interface follows the language of your Bludit site.
@@ -31,7 +31,7 @@ Run a podcast with [Bludit](https://www.bludit.com): manage episodes in the admi
 3. In the Bludit admin panel, go to **Settings → Plugins** and activate **Podcast**.
 4. Open **Podcast → Channel settings**, fill in your podcast details and submit the feed address shown there to Apple Podcasts, Spotify and other directories.
 
-Audio files are usually larger than PHP's default upload limit of 2 MB. The [documentation](podcast/README.md#4-configure-upload-limits-important-for-audio-files) explains how to raise it, along with all settings, the feed and the player.
+Audio files are uploaded in parts with a progress bar, so PHP's default upload limits are enough. The [documentation](podcast/README.md) explains all settings, the feed and the player.
 
 **Updating:** copy the `podcast` folder of the new release over the existing one. Episodes, settings and uploads are stored in `bl-content/` and are kept. See the [changelog](CHANGELOG.md) for what changed.
 
