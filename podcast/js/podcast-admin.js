@@ -383,6 +383,60 @@
         });
     }
 
+    // ── Statistik (Roadmap 033) ───────────────────────────────────────
+    // „Neu berechnen“: Summen aus dem Rohprotokoll neu bilden, dann neu laden
+    var statsPage = document.getElementById('podcast-stats');
+    if (statsPage) {
+        showStoredNotice(statsPage);
+
+        // Wert einer Säule beim Darüberfahren (Text aus data-tip, nur als Text);
+        // dieselben Werte stehen in der Tabelle unter dem Diagramm
+        var tooltip = document.createElement('div');
+        tooltip.className = 'podcast-chart-tooltip';
+        tooltip.hidden = true;
+        document.body.appendChild(tooltip);
+        statsPage.addEventListener('pointermove', function (e) {
+            var col = e.target.closest ? e.target.closest('.podcast-chart-col') : null;
+            if (!col) {
+                tooltip.hidden = true;
+                return;
+            }
+            tooltip.textContent = col.getAttribute('data-tip') || '';
+            tooltip.hidden = false;
+            var left = Math.min(e.clientX + 12, window.innerWidth - tooltip.offsetWidth - 8);
+            tooltip.style.left = Math.max(8, left) + 'px';
+            tooltip.style.top = Math.max(8, e.clientY - tooltip.offsetHeight - 12) + 'px';
+        });
+        statsPage.addEventListener('pointerleave', function () {
+            tooltip.hidden = true;
+        });
+
+        var recalc = document.getElementById('podcast-stats-recalculate');
+        recalc.addEventListener('click', function (e) {
+            e.preventDefault();
+            if (recalc.getAttribute('aria-disabled') === 'true') return;
+            recalc.setAttribute('aria-disabled', 'true');
+            var body = new URLSearchParams();
+            body.append('tokenCSRF', (typeof tokenCSRF !== 'undefined' ? tokenCSRF : ''));
+            body.append('podcast_api_action', 'stats_recalculate');
+            fetch(PODCAST_API_URL, { method: 'POST', body: body, credentials: 'same-origin' })
+                .then(readJson)
+                .then(function (data) {
+                    if (data.error) {
+                        recalc.removeAttribute('aria-disabled');
+                        alert(t('error-message', { message: data.error }));
+                        return;
+                    }
+                    if (data.notice) storeNotice(data.notice);
+                    location.reload();
+                })
+                .catch(function (err) {
+                    recalc.removeAttribute('aria-disabled');
+                    alert(err && err.isServerResponse ? err.message : t('network-error-stats'));
+                });
+        });
+    }
+
     // Nur auf der Podcast-Seite aktiv
     if (!list) return;
 

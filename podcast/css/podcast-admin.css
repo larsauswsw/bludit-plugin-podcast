@@ -100,3 +100,157 @@
 #podcast-media .podcast-episode-meta {
     font-size: 0.8em;
 }
+
+/* Statistik (Roadmap 033): Schriftgrößen wie die Episodenliste */
+#podcast-stats .podcast-episode-title {
+    font-size: 1.1em;
+}
+
+#podcast-stats .podcast-episode-meta {
+    font-size: 0.8em;
+}
+
+#podcast-stats-recalculate[aria-disabled="true"] {
+    pointer-events: none;
+    opacity: .6;
+}
+
+/*
+ * Statistik, Schritt 2: Kennzahlen, Verlauf und Aufschlüsselung. Eine Farbe
+ * für alle Daten (Blau, gegen den Hintergrund geprüft), Raster als Haarlinie,
+ * Säulen höchstens 24 px breit mit runder Oberkante, 2 px Abstand.
+ */
+#podcast-stats {
+    --podcast-data: #2a78d6;
+    --podcast-data-track: #e3eefb;
+    --podcast-data-other: #898781;
+    --podcast-grid: #e1e0d9;
+    --podcast-axis: #c3c2b7;
+}
+
+#podcast-stats .podcast-stat-value {
+    font-size: 1.75rem;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+#podcast-stats .podcast-stat-label {
+    font-size: .8rem;
+    color: #6c757d;
+}
+
+#podcast-stats .podcast-chart-caption {
+    font-size: .875rem;
+    font-weight: 600;
+}
+
+#podcast-stats .podcast-chart-plot {
+    position: relative;
+    height: 180px;
+    margin: .75rem 0 0 3rem;
+}
+
+#podcast-stats .podcast-chart-grid {
+    position: absolute;
+    right: 0;
+    left: 0;
+    border-top: 1px solid var(--podcast-grid);
+}
+
+#podcast-stats .podcast-chart-grid.is-base {
+    border-top-color: var(--podcast-axis);
+}
+
+#podcast-stats .podcast-chart-grid span {
+    position: absolute;
+    right: 100%;
+    padding-right: .5rem;
+    font-size: .75rem;
+    font-variant-numeric: tabular-nums;
+    color: #6c757d;
+    white-space: nowrap;
+    transform: translateY(-50%);
+}
+
+#podcast-stats .podcast-chart-bars {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+}
+
+#podcast-stats .podcast-chart-col {
+    display: flex;
+    flex: 1 1 0;
+    align-items: flex-end;
+    justify-content: center;
+    height: 100%;
+}
+
+#podcast-stats .podcast-chart-bar {
+    display: block;
+    width: 100%;
+    max-width: 24px;
+    background-color: var(--podcast-data);
+    border-radius: 4px 4px 0 0;
+}
+
+#podcast-stats .podcast-chart-col:hover .podcast-chart-bar {
+    opacity: .75;
+}
+
+#podcast-stats .podcast-chart-axis {
+    display: flex;
+    justify-content: space-between;
+    margin-left: 3rem;
+    padding-top: .25rem;
+    font-size: .75rem;
+    color: #6c757d;
+}
+
+#podcast-stats .podcast-chart-table table {
+    max-width: 24rem;
+    font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 575.98px) {
+    #podcast-stats .podcast-chart-bars {
+        gap: 1px;
+    }
+}
+
+.podcast-chart-tooltip {
+    position: fixed;
+    z-index: 1070;
+    padding: .25rem .5rem;
+    font-size: .8rem;
+    color: #0b0b0b;
+    pointer-events: none;
+    background: #fff;
+    border: 1px solid rgba(11, 11, 11, .1);
+    border-radius: .25rem;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, .1);
+}
+
+#podcast-stats .podcast-share-track {
+    height: 8px;
+    margin-top: .2rem;
+    overflow: hidden;
+    background-color: var(--podcast-data-track);
+    border-radius: 4px;
+}
+
+#podcast-stats .podcast-share-bar {
+    display: block;
+    height: 100%;
+    background-color: var(--podcast-data);
+    border-radius: 4px;
+}
+
+#podcast-stats .podcast-share-bar.is-other {
+    background-color: var(--podcast-data-other);
+}

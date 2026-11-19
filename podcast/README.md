@@ -13,6 +13,7 @@ A podcast plugin for [Bludit](https://www.bludit.com/) CMS. Manage episodes in t
 - **Embedded audio player** — [Podlove Web Player 5](https://podlove.org/podlove-web-player/), served from your own server (no CDN), placed inside the page content of every episode; a plain HTML5 player is available as an alternative and as fallback
 - **Apple Podcasts ready** — category from Apple's list, podcast type, cover check (square, 1400–3000 px, RGB), show notes as HTML, file sizes of external audio, Podcasting 2.0 `podcast:guid` and `podcast:locked`
 - **Subscribe button** in the player with podcast apps and your links on Apple Podcasts, Spotify, Pocket Casts, Deezer and Castbox
+- **Download statistics** (optional) — counts downloads on your own server, similar to the IAB guidelines: per episode after 1 day, 1 week, 4 weeks and 3 months and in total, history chart, apps, platforms and source, subscribers reported by services such as Feedly; no cookies, no IP addresses stored, no third parties
 - **Role-based access** — admins and editors can manage episodes; channel settings are admin-only
 - **English and German** — the admin interface follows the language of your Bludit site
 - Works with Bludit installed in a subdirectory
@@ -141,6 +142,8 @@ At the top, a box lists what is still missing before you submit the feed to Appl
 | | **Podcast GUID** | Read-only: permanent podcast ID (`<podcast:guid>`), generated once from the feed URL (UUIDv5 as defined by Podcasting 2.0) and kept when the feed moves | `5c3f1a80-…` |
 | | **Different feed URL (optional)** | Only if the feed is served from another address (e.g. a CDN); leave empty to use the site address | `https://cdn.example.com/podcast.xml` |
 | | **Website URL** | Your podcast website; leave empty for the Bludit site | `https://example.com` |
+| | **Max. episodes in the feed** | Only the newest episodes appear in the feed; older ones stay on the website. Empty or 0 = all | `100` |
+| **Statistics** | **Count downloads** | Off by default. When on, feed and player link to a counting address of this site that redirects to the audio file; see [Download statistics](#download-statistics) | `No` |
 | **Website & player** | **Player on episode pages** | Podlove Web Player (served locally) or a simple HTML5 player | Podlove |
 | | **Player position** | At the start of the page content (below the title) or at the end | start |
 | **Uploads** | **Max. upload size (MB)** | Largest audio file; images are also limited by PHP's `upload_max_filesize` | `512` |
@@ -222,7 +225,11 @@ The feed includes:
 
 **File size of external audio URLs:** when an episode with an external audio URL is saved, the plugin requests the size from that server (`HEAD`, or a 1-byte `Range` request if `HEAD` is not supported). Only `http`/`https` on ports 80/443 to public addresses is requested; internal networks, redirects to them and more than three redirects are refused, the request is limited to 10 seconds. If the size cannot be determined, the episode is saved anyway with a hint above the list, and the feed shows `length="0"`. Uploaded files and unchanged URLs keep their stored size.
 - All publicly visible episodes — published, sticky and static; drafts and scheduled episodes are excluded, as are episodes without audio
-- Episodes sorted by date, newest first
+- Episodes sorted by date, newest first; with **Max. episodes in the feed** only the newest ones
+
+**Caching:** podcast apps check the feed often. It is sent with `ETag` and `Last-Modified`; an app that asks with the version it already has gets `304 Not Modified` without content, so the full feed is only downloaded after a change. `<lastBuildDate>` is the time of the last change (new, edited or deleted episode, channel settings, a scheduled episode going live), not the time of the request. The plugin remembers it in `bl-content/workspaces/podcast/feed-state.php`.
+
+**Download statistics:** with **Count downloads** turned on, each `<enclosure>` points to the counting address of the episode instead of the audio file, see [Download statistics](#download-statistics). Turning it on or off changes the feed (new `ETag`); single downloads do not.
 
 **Submit your feed** to podcast directories, for example:
 - [Apple Podcasts Connect](https://podcastsconnect.apple.com/)
@@ -244,6 +251,55 @@ The [Podlove Web Player](https://podlove.org/podlove-web-player/) is added to ev
 The player itself sends no data to third parties. The audio file is loaded from wherever its URL points when a visitor presses play (the HTML5 player uses `preload="none"`). If your audio files are hosted on another server (e.g. a podcast hoster or CDN), mention that host in your privacy policy. Example text (German):
 
 > Auf Episodenseiten binden wir den Podlove Web Player ein, der von unserem eigenen Server ausgeliefert wird; dabei werden keine Daten an Dritte übertragen. Beim Abspielen wird die Audiodatei von [Anbieter / unser Server] geladen; dabei wird Ihre IP-Adresse an diesen Server übermittelt, soweit dies für die Auslieferung technisch erforderlich ist.
+
+---
+
+## Download statistics
+
+Turn on **Channel settings → Statistics → Count downloads** to count how often your episodes are downloaded — on your own server, without an external service. The numbers are on **Podcast → Statistics**.
+
+**How it works:** the feed and the player on episode pages no longer link to the audio file directly, but to a counting address of your site, for example `https://example.com/podcast-download/feed/<episode-id>/episode-1.mp3` (`feed` for podcast apps, `player` for the player and download link on the website). It counts the request and redirects (HTTP `302`) to the audio URL stored in the episode — an uploaded file or an external URL. The file is still delivered by your web server or host. The redirect always goes to the stored URL, never to an address from the request. Turning counting off restores the direct links; the counting addresses keep redirecting (apps may have cached the feed) but no longer count.
+
+**What counts as a download** — similar to the [IAB Podcast Measurement Guidelines](https://iabtechlab.com/standards/podcast-measurement-guidelines/), not certified:
+
+- one download per episode, IP address and user agent (app) per calendar day in the website's time zone; IPv6 addresses count per `/64` network, IPv4 addresses in full;
+- `HEAD` requests, the test requests of podcast apps via the feed (`Range: bytes=0-0` and `bytes=0-1`) and requests without a user agent do not count, nor do bots from the [OPAWG lists](https://github.com/opawg/user-agents-v2) (bots and libraries marked as bots) and a small supplement for bots missing there (all shipped in `data/`, see `data/SOURCE.md`);
+- the player on the website loads the audio only when a visitor presses play. Safari sends only such a test request to the counting address and loads the rest directly from the audio URL, so for the player it counts;
+- only published episodes count (published, sticky, static), from their publication date; unknown episodes and drafts get `404`;
+- only `REMOTE_ADDR` is used as IP address; `X-Forwarded-For` and similar headers can be forged and are ignored.
+
+**How to read the numbers:** they are in the same range as the numbers of podcast hosts, usually a little higher, because a download counts when it starts — whether the app loads the whole file cannot be seen after the redirect. They do not show how many people listen: apps download new episodes automatically, also ones nobody plays, and platforms with their own copy of the file, such as Spotify, download it only once for everyone listening there.
+
+**The statistics page** (**Podcast → Statistics**) shows, for the chosen period (30 days, 90 days, 12 months or all time):
+
+- the downloads in the period and the subscribers reported by services (see below);
+- a chart of the downloads per day (up to 90 days), per week from Monday (up to two years) or per month; hover a column for its value, or open **Show as table**;
+- the downloads by **app**, **platform** (iPhone, Android, computer, smart speaker …) and **source** (podcast apps via the feed, or the player on the website), as recognized by the lists of the Open Podcast Analytics Working Group; browsers and programming libraries are marked as such, the ninth and further entries are combined as *Other*;
+- every published episode with its downloads in the first 1, 7, 28 and 91 days from the day of publication (*1 day*, *1 week*, *4 weeks*, *3 months*, marked `*` while the period is running) and in total, independent of the period. The title opens the episode's own page with these numbers, a chart since publication and its apps, platforms and sources.
+
+Today's numbers are live; earlier days are summed up once a day.
+
+**Subscribers (reported):** some services, e.g. Feedly, Inoreader, NewsBlur or Overcast, name their number of subscribers in the user agent when they fetch the feed (`… 16 subscribers …`). The plugin keeps the highest number per service and day (no IP address, no hash) and shows each service's latest value of the last 30 days and their sum. Apple Podcasts, Spotify and most apps don't report a number, so the sum is a lower limit; the numbers cannot be verified.
+
+**Storage and privacy** — everything stays in `bl-content/workspaces/podcast/stats/` (not reachable over HTTP; every file starts with Bludit's protection line):
+
+- **No IP addresses** are stored. From the IP address, user agent and episode the plugin computes a hash (HMAC-SHA-256) with a random key of the day (`salt.php`). The key is deleted when the day is over, after that no hash can be traced back to an IP address — not in backups either.
+- **Raw log** (`raw-YYYY-MM-DD.php`, one file per day): time, episode, source, requested range, user agent and the hash of each request. Completed days are compressed. Deleted after 90 days. At most 16 MB per day (about 50,000 requests); further requests that day are redirected but not counted, so a flood of requests cannot fill the disk.
+- **Sums** (`sums-YYYY-MM.php`): downloads per day, episode, source and user agent (without time and without hash), kept permanently, so that newer lists of bots, apps and devices also apply to older days.
+- **Reported subscribers** (`subs-YYYY-MM.php`): per day the service name and the highest number it reported, kept permanently; at most 50 services per day.
+- Without cron (Bludit has none), completed days are summed up with the first download of a new day and when the statistics page is opened. **Recalculate** on the statistics page rebuilds the sums of all days whose raw log still exists, e.g. after a plugin update with changed rules.
+- No cookies, no data to third parties, no location lookup.
+- Deactivating the plugin in Bludit (**Settings → Plugins**) deletes its settings and workspace, including the statistics (episodes are kept).
+
+### Privacy policy note for the download statistics
+
+Example text (German), adapt it to your situation:
+
+> **Reichweitenmessung des Podcasts.** Beim Abruf einer Podcast-Episode über unseren Feed oder den Player auf dieser Website zählen wir den Abruf auf unserem eigenen Server, um die Reichweite des Podcasts zu ermitteln (berechtigtes Interesse, Art. 6 Abs. 1 lit. f DSGVO). Dazu wird Ihre IP-Adresse nur kurzzeitig verarbeitet: Aus ihr, der Kennung Ihrer Podcast-App bzw. Ihres Browsers (User-Agent) und der Episode wird mit einem täglich wechselnden Zufallsschlüssel ein Prüfwert (Hash) gebildet, der nur erkennt, ob dieselbe Episode am selben Tag mehrfach abgerufen wurde. Die IP-Adresse wird nicht gespeichert; der Schlüssel wird nach Ablauf des Tages gelöscht, danach ist kein Rückschluss auf die IP-Adresse mehr möglich. Gespeichert werden Zeitpunkt, Episode, Quelle (Feed oder Website), angeforderter Dateibereich, User-Agent und dieser Prüfwert; diese Einträge löschen wir nach 90 Tagen. Dauerhaft bleiben nur Summen je Tag, Episode, Quelle und User-Agent. Es werden keine Cookies gesetzt und keine Daten an Dritte weitergegeben.
+
+The text covers the plugin's counting only. Like for every page of your site, your web server usually writes each request with the IP address to its access log, independently of the plugin; that belongs in the general part of your privacy policy (and the log's retention period in your server settings).
+
+If your audio files are stored on another server (podcast host, CDN), the redirect makes the app load the file from there as before; mention that host as well (see the [privacy policy note](#privacy-policy-note) for the player).
 
 ---
 
@@ -271,6 +327,13 @@ A PHP error occurred. Check the PHP error log and `bl-content/databases/syslog.p
 - Check that the feed filename in the channel settings matches the URL you are accessing.
 - Verify that the episode has audio — episodes without an audio URL are excluded from the feed.
 
+**Statistics stay at 0**
+
+- **Count downloads** must be on in the channel settings; the statistics page says so if it is off.
+- Requests from bots, without user agent, `HEAD` requests and the test requests of apps do not count. Test with a podcast app or a browser, not with `curl`.
+- The counting address is a normal Bludit address: on Apache Bludit's `.htaccess` must be active, on Nginx `try_files … /index.php` (as for every Bludit page). A `404` page of your web server instead of a redirect means the request did not reach Bludit.
+- Check that `bl-content/workspaces/podcast/` is writable by the web server.
+
 **Player does not appear on episode pages**
 
 - The episode must have an `http(s)` audio URL in its custom field `podcast_audio_url`.
@@ -281,4 +344,4 @@ A PHP error occurred. Check the PHP error log and `bl-content/databases/syslog.p
 
 ## License
 
-The plugin is released under the [MIT License](LICENSE). The bundled Podlove Web Player in `player/` is MIT-licensed as well (see `player/LICENSE`).
+The plugin is released under the [MIT License](LICENSE). The bundled Podlove Web Player in `player/` is MIT-licensed as well (see `player/LICENSE`), as are the OPAWG lists in `data/` (see `data/LICENSE`).

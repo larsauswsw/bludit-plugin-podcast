@@ -38,7 +38,11 @@ class Podcast extends Plugin {
             // Podcasting 2.0: Kennung einmal erzeugt und gespeichert, Sperre (yes/no)
             'podcastGuid' => '',
             'feedLocked'  => 'no',
+            // Höchstzahl Episoden im Feed (leer/0 = alle, Roadmap 013)
+            'feedMaxEpisodes' => '',
             'maxUploadMB' => '512',
+            // Download-Statistik (Roadmap 033): Opt-in, yes/no
+            'countDownloads' => 'no',
             'playerMode'  => 'podlove',
             'playerPosition' => 'top',
             // Links zum Podcast bei Diensten (Abo-Button, SUBSCRIBE_SERVICES)
@@ -95,7 +99,7 @@ class Podcast extends Plugin {
 
         // Titel des Browser-Tabs wie bei Bludits Seiten (controllers/about.php);
         // Bludit gibt ihn vor adminView() und unverändert aus
-        $layout['title'] = ($this->isMediaView() ? $this->html('media-title') : $this->html('episodes-title')) . ' - ' . $layout['title'];
+        $layout['title'] = $this->adminViewTitle() . ' - ' . $layout['title'];
 
         if (!$allowed) {
             return;
@@ -125,15 +129,17 @@ class Podcast extends Plugin {
         <link rel="stylesheet" href="<?php echo htmlspecialchars($this->assetUrl('css/podcast-admin.css'), ENT_QUOTES) ?>">
 
         <h2 class="mt-0 mb-3">
-          <span class="fa <?php echo $this->isMediaView() ? 'fa-folder-open' : 'fa-microphone' ?>" style="font-size: 0.9em;"></span><span><?php echo $this->isMediaView() ? $this->html('media-title') : $this->html('episodes-title') ?></span>
+          <span class="fa <?php echo $this->isMediaView() ? 'fa-folder-open' : ($this->isStatsView() ? 'fa-bar-chart' : 'fa-microphone') ?>" style="font-size: 0.9em;"></span><span><?php echo $this->adminViewTitle() ?></span>
         </h2>
 
         <?php
         try {
-            $usage = $this->mediaUsage();
             if ($this->isMediaView()) {
-                echo $this->renderMediaSection($this->mediaFiles(), $usage);
+                echo $this->renderMediaSection($this->mediaFiles(), $this->mediaUsage());
+            } elseif ($this->isStatsView()) {
+                echo $this->renderStatsSection($login->role() === 'admin', $this->postString($_GET, 'period'), $this->postString($_GET, 'episode'));
             } else {
+                $usage    = $this->mediaUsage();
                 $episodes = $this->getEpisodes();
                 echo $this->renderEpisodeSection($login->role() === 'admin', $episodes, $usage);
                 echo $this->renderEpisodeForm($apiUrl, $this->suggestEpisodeNumbers($this->episodeNumberItems($episodes)));
@@ -149,6 +155,19 @@ class Podcast extends Plugin {
     /** Ansicht „Medien“ (Roadmap 025): /admin/plugin/podcast?media */
     private function isMediaView() {
         return isset($_GET['media']) && !$this->isApiRequest();
+    }
+
+    /** Ansicht „Statistik“ (Roadmap 033): /admin/plugin/podcast?stats */
+    private function isStatsView() {
+        return isset($_GET['stats']) && !$this->isApiRequest() && !$this->isMediaView();
+    }
+
+    /** Titel der Admin-Ansicht als HTML (Seitenkopf und Browser-Tab). */
+    private function adminViewTitle() {
+        if ($this->isMediaView()) {
+            return $this->html('media-title');
+        }
+        return $this->isStatsView() ? $this->html('stats-title') : $this->html('episodes-title');
     }
 
     /**
@@ -418,6 +437,22 @@ class Podcast extends Plugin {
             null, ' inputmode="url" placeholder="' . $esc($this->localFeedUrl()) . '"');
         echo $text('siteUrl', $this->html('site-url'), $this->html('site-url-tip') . $ignoredUrl('siteUrl'),
             null, ' inputmode="url" placeholder="' . $esc(DOMAIN_BASE) . '"');
+        echo $text('feedMaxEpisodes', $this->html('feed-max-episodes'), $this->html('feed-max-episodes-tip'),
+            $this->feedMaxEpisodes() ?: '', ' inputmode="numeric" pattern="[0-9]*" placeholder="0"');
+
+        // Download-Statistik (Roadmap 033): Opt-in
+        echo $group($this->html('group-stats'));
+        ?>
+        <div>
+            <label for="podcast-countDownloads"><?php echo $this->html('count-downloads') ?></label>
+            <select id="podcast-countDownloads" name="countDownloads">
+                <option value="no"  <?php echo !$this->countDownloads() ? 'selected' : '' ?>><?php echo $this->html('no') ?></option>
+                <option value="yes" <?php echo $this->countDownloads()  ? 'selected' : '' ?>><?php echo $this->html('yes') ?></option>
+            </select>
+            <span class="tip"><?php echo $this->html('count-downloads-tip', [], ['link' => '<a href="'
+                . $esc(HTML_PATH_ADMIN_ROOT . 'plugin/podcast?stats') . '">' . $this->html('stats') . '</a>']) ?></span>
+        </div>
+        <?php
 
         echo $group($this->html('group-player'));
         ?>
@@ -452,6 +487,10 @@ class Podcast extends Plugin {
     public function post() {
         $saved = parent::post();
         $this->ensurePodcastGuid();
+        // Zählung aus: Salt des Tages gleich löschen (Roadmap 033)
+        if (!$this->countDownloads()) {
+            $this->expireStatsSalt(date('Y-m-d'), true);
+        }
         return $saved;
     }
 
@@ -460,6 +499,15 @@ class Podcast extends Plugin {
     // ═══════════════════════════════════════════════════════════════════
 
     public function beforeAll() {
+        // Zähl-Adresse aus Feed und Player (Roadmap 033): zählen, weiterleiten
+        $download = $this->webhook(self::STATS_WEBHOOK, true, false);
+        if (is_string($download) && $download !== '') {
+            $this->handleDownload($download);
+            exit;
+        }
+        // Salt eines vergangenen Tages löschen, auch an Tagen ohne Download
+        $this->expireStatsSalt(date('Y-m-d'));
+
         // webhook() vergleicht mit HTML_PATH_ROOT (auch bei Bludit im Unterordner)
         // und ignoriert Parameter wie ?nocache=…
         if ($this->webhook($this->feedSlug())) {
@@ -576,7 +624,8 @@ class Podcast extends Plugin {
 
     /** Player-Container: Podlove-Ziel plus HTML5-Fallback (bleibt, bis Podlove geladen ist). */
     private function playerHtml($page) {
-        $audioAttr = htmlspecialchars($this->getEpisodeMeta($page)['audio_url'], ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $audio     = $this->publicAudioUrl($page, 'player', $this->getEpisodeMeta($page)['audio_url']);
+        $audioAttr = htmlspecialchars($audio, ENT_QUOTES | ENT_HTML5, 'UTF-8');
         $html  = '<div id="podcast-episode-player" class="podcast-episode-player">';
         if ($this->playerMode() === 'podlove') {
             $html .= '<div id="podlove-episode-player"></div>';
@@ -625,7 +674,7 @@ class Podcast extends Plugin {
             'poster'          => $poster,
             'audio'           => [
                 [
-                    'url'      => $audioUrl,
+                    'url'      => $this->publicAudioUrl($page, 'player', $audioUrl),
                     'mimeType' => $mime,
                     'size'     => $audioLength,
                     'title'    => 'Audio',
@@ -679,7 +728,109 @@ class Podcast extends Plugin {
     // RSS FEED GENERATION
     // ═══════════════════════════════════════════════════════════════════
 
+    /** Platzhalter für lastBuildDate, solange der Hash des Feeds gebildet wird. */
+    private const FEED_BUILD_TOKEN = "\0lastBuildDate\0";
+
+    /**
+     * Liefert den Feed mit HTTP-Caching (Roadmap 013): ETag = Hash des Inhalts,
+     * lastBuildDate und Last-Modified = Zeitpunkt, seit dem der Feed diesen
+     * Inhalt hat (feedBuildTime()). Fragt eine App mit dem letzten Stand an
+     * (If-None-Match bzw. If-Modified-Since), kommt 304 ohne Inhalt. So zählt
+     * jede Änderung (Episoden, Kanal, auch gelöschte oder geplante Episoden,
+     * die sichtbar werden), ohne einen Zwischenspeicher, der veralten kann.
+     */
     private function outputFeed() {
+        // Abonnentenzahl, die ein Dienst beim Abruf meldet (Roadmap 033), auch bei 304
+        if ($this->countDownloads()) {
+            try {
+                $this->recordFeedSubscribers($_SERVER['HTTP_USER_AGENT'] ?? null, time());
+            } catch (Throwable $e) {
+                Log::set(__METHOD__ . LOG_SEP . $e->getMessage());
+            }
+        }
+        $xml  = $this->feedXml(self::FEED_BUILD_TOKEN);
+        $hash = sha1($xml);
+        $time = $this->feedBuildTime($hash);
+        $etag = '"' . $hash . '"';
+
+        // Kein Output vor diesem Punkt — ob_start() wurde ggf. von Bludit gestartet
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        header('Content-Type: application/rss+xml; charset=UTF-8');
+        header('ETag: ' . $etag);
+        header('Last-Modified: ' . gmdate('D, d M Y H:i:s', $time) . ' GMT');
+        // Zwischenspeicher (Browser, Proxys) fragen jedes Mal nach, ob es Neues gibt
+        header('Cache-Control: no-cache');
+        if ($this->feedNotModified($etag, $time, $_SERVER)) {
+            http_response_code(304);
+            return;
+        }
+        echo str_replace(self::FEED_BUILD_TOKEN, date('r', $time), $xml);
+    }
+
+    /**
+     * Zeitpunkt, seit dem der Feed den Inhalt mit diesem Hash hat. Gemerkt im
+     * Workspace (Hash und Zeit); ändert sich der Inhalt, gilt ab jetzt die
+     * neue Zeit. Ohne beschreibbaren Workspace jedes Mal „jetzt“ (dann hilft
+     * nur der ETag).
+     */
+    private function feedBuildTime($hash, $now = null) {
+        $now   = $now ?? time();
+        $file  = $this->workspace() . 'feed-state.php';
+        $state = is_file($file) ? json_decode((string) preg_replace('/^<\?php[^\n]*\n/', '', (string) file_get_contents($file)), true) : null;
+        if (is_array($state) && ($state['hash'] ?? null) === $hash
+            && is_int($state['time'] ?? null) && $state['time'] > 0 && $state['time'] <= $now) {
+            return $state['time'];
+        }
+        $dir = dirname($file);
+        if (is_dir($dir) || @mkdir($dir, DIR_PERMISSIONS, true)) {
+            @file_put_contents($file, "<?php defined('BLUDIT') or die('Bludit CMS.'); ?>\n"
+                . json_encode(['hash' => $hash, 'time' => $now]), LOCK_EX);
+        }
+        return $now;
+    }
+
+    /**
+     * true, wenn die App den aktuellen Feed schon hat: If-None-Match mit
+     * diesem ETag (hat Vorrang, RFC 9110) bzw. If-Modified-Since nicht vor
+     * der letzten Änderung. Apache hängt beim Komprimieren „-gzip“ an den
+     * ETag, nginx macht ihn schwach („W/“): beides zählt als derselbe.
+     */
+    private function feedNotModified($etag, $lastModified, array $server) {
+        $match = $server['HTTP_IF_NONE_MATCH'] ?? null;
+        if (is_string($match) && trim($match) !== '') {
+            if (trim($match) === '*') {
+                return true;
+            }
+            foreach (explode(',', $match) as $tag) {
+                $tag = trim($tag);
+                if (strncmp($tag, 'W/', 2) === 0) {
+                    $tag = substr($tag, 2);
+                }
+                $tag = (string) preg_replace('/-(?:gzip|br|deflate|zstd)"$/', '"', $tag);
+                if ($tag === $etag) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        $since = $server['HTTP_IF_MODIFIED_SINCE'] ?? null;
+        if (is_string($since) && trim($since) !== '') {
+            $time = strtotime($since);
+            return $time !== false && $lastModified <= $time;
+        }
+        return false;
+    }
+
+    /** Höchstzahl Episoden im Feed, 0 = alle. */
+    private function feedMaxEpisodes() {
+        $max = filter_var(trim($this->setting('feedMaxEpisodes')), FILTER_VALIDATE_INT, ['options' => ['min_range' => 0]]);
+        return $max === false ? 0 : $max;
+    }
+
+    /** Der Feed als XML; $buildDate steht in lastBuildDate. */
+    private function feedXml($buildDate) {
         global $pages;
 
         // Alle öffentlich sichtbaren Seiten mit Tag 'podcast' (wie in der
@@ -713,14 +864,10 @@ class Podcast extends Plugin {
         $copyright = $this->xml($this->setting('copyright'));
         // Apple erwartet true/false (nicht mehr yes/no)
         $explicit  = $this->getValue('explicit') === 'yes' ? 'true' : 'false';
-        $buildDate = date('r');
+        $max       = $this->feedMaxEpisodes();
+        $count     = 0;
 
-        header('Content-Type: application/rss+xml; charset=UTF-8');
-        // Kein Output vor diesem Punkt — ob_start() wurde ggf. von Bludit gestartet
-        while (ob_get_level() > 0) {
-            ob_end_clean();
-        }
-
+        ob_start();
         echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
         echo '<rss version="2.0"' . "\n";
         echo '    xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd"' . "\n";
@@ -782,6 +929,9 @@ class Podcast extends Plugin {
 
             $audioUrl    = $get('audio_url');
             if (!$audioUrl) continue;
+            // Nur die neuesten Episoden mit Audio (Einstellung „Max. Episoden im Feed“)
+            if ($max > 0 && $count >= $max) break;
+            $count++;
 
             $audioLength = (int) $get('audio_length');
             $audioExt    = strtolower(pathinfo(parse_url($audioUrl, PHP_URL_PATH), PATHINFO_EXTENSION));
@@ -795,7 +945,8 @@ class Podcast extends Plugin {
             $epNotes    = $this->shownotesHtml($epHtml);
             $epDesc     = $this->xml($this->episodeTextSummary($epNotes !== '' ? $epNotes : $epHtml));
             $epLink     = $this->xml($page->permalink());
-            $epAudioUrl = $this->xml($audioUrl);
+            // Mit „Downloads zählen“ die Zähl-Adresse (Roadmap 033)
+            $epAudioUrl = $this->xml($this->publicAudioUrl($page, 'feed', $audioUrl));
             $epGuid     = $this->xml($page->uuid());
             $epDate     = $page->date('r');
             $epNum      = $this->xml($get('itunes_episode'));
@@ -826,6 +977,7 @@ class Podcast extends Plugin {
 
         echo '</channel>' . "\n";
         echo '</rss>' . "\n";
+        return (string) ob_get_clean();
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -854,6 +1006,9 @@ class Podcast extends Plugin {
               </a>
               <a href="<?php echo HTML_PATH_ADMIN_ROOT ?>plugin/podcast?media" class="mr-4 mb-2">
                 <span class="fa fa-folder-open mr-1"></span><?php echo $this->html('media') ?>
+              </a>
+              <a href="<?php echo HTML_PATH_ADMIN_ROOT ?>plugin/podcast?stats" class="mr-4 mb-2">
+                <span class="fa fa-bar-chart mr-1"></span><?php echo $this->html('stats') ?>
               </a>
               <?php if ($canConfigure): ?>
               <a href="<?php echo HTML_PATH_ADMIN_ROOT ?>configure-plugin/Podcast" class="mb-2">
@@ -1538,6 +1693,1457 @@ class Podcast extends Plugin {
     }
 
     // ═══════════════════════════════════════════════════════════════════
+    // DOWNLOAD-STATISTIK (Roadmap 033)
+    // ═══════════════════════════════════════════════════════════════════
+    //
+    // Mit „Downloads zählen“ zeigen Enclosure (Feed) und Player auf den
+    // Webhook podcast-download/<Quelle>/<UUID>/<Dateiname>; er zählt den
+    // Abruf und leitet per 302 auf die gespeicherte Audio-Adresse weiter.
+    // Gezählt wird IAB-ähnlich (Tagesfenster, Dubletten, Bots, Probe-Ranges);
+    // gespeichert werden nie IP-Adressen, nur ein Hash mit Tages-Salt.
+    // Ablage im Workspace unter stats/: Salt des Tages (salt.php),
+    // Rohprotokoll je Tag (raw-JJJJ-MM-TT.php, 90 Tage, abgeschlossene Tage
+    // komprimiert) und dauerhafte Summen je Monat (sums-JJJJ-MM.php).
+
+    /** Pfad des Webhooks (nach der Website-Adresse). */
+    private const STATS_WEBHOOK = 'podcast-download';
+
+    /** Quellen eines Abrufs: Enclosure im Feed bzw. Player und Download-Link auf der Website. */
+    private const STATS_SOURCES = ['feed', 'player'];
+
+    /** So viele Tage (heute eingeschlossen) bleibt das Rohprotokoll erhalten. */
+    private const STATS_RAW_DAYS = 90;
+
+    /**
+     * Probe-Anfragen von Apps (wie Podlove Publisher): zählen nur über den
+     * Feed nicht. Der Player der Website lädt erst beim Abspielen, und Safari
+     * schickt nur diese Anfrage an die Zähl-Adresse, den Rest direkt an das
+     * Ziel der Weiterleitung — dort zählt sie (statsAggregate()).
+     */
+    private const STATS_PROBE_RANGES = ['bytes=0-0', 'bytes=0-1'];
+
+    /** Höchstlänge gespeicherter Kopfzeilen (Bytes): User-Agent, Range. */
+    private const STATS_UA_MAX    = 400;
+    private const STATS_RANGE_MAX = 64;
+
+    /**
+     * Größe des Rohprotokolls eines Tages, ab der nichts mehr dazukommt
+     * (Bytes, etwa 50.000 Anfragen): Der Webhook ist öffentlich, massenhafte
+     * Anfragen sollen weder den Speicherplatz füllen noch das Zusammenfassen
+     * sprengen. Weitergeleitet wird trotzdem.
+     */
+    private const STATS_RAW_MAX_BYTES = 16777216;
+
+    /** Erste Zeile jeder Datei im Workspace: auch ohne .htaccess nicht abrufbar. */
+    private const WORKSPACE_GUARD = "<?php defined('BLUDIT') or die('Bludit CMS.'); ?>\n";
+
+    /** @var array<string, array{entries: array<int, array{name: string, kind: string, category: string, regex: string}>, chunks: string[]}>|null OPAWG-Listen, siehe opawgLists() */
+    private $opawg = null;
+
+    /** @var array<string, array{bot: bool, kind: string, name: string, device: string}> bereits erkannte User-Agents */
+    private $clientCache = [];
+
+    /** Downloads zählen? (Opt-in in den Kanaleinstellungen) */
+    private function countDownloads() {
+        return $this->getValue('countDownloads') === 'yes';
+    }
+
+    /**
+     * Was der Webhook mit einer Episode tut: 'none' (nicht öffentlich → 404),
+     * 'redirect' (öffentlich, Datum in der Zukunft: weiterleiten, nicht
+     * zählen) oder 'count'. Öffentlich wie im Feed: veröffentlicht, fixiert,
+     * statisch; dazu geplante, deren Zeit gekommen ist (Bludits Scheduler
+     * läuft erst nach beforeAll()).
+     */
+    private function downloadState($type, $dateRaw, $now) {
+        $due    = !is_string($dateRaw) || $dateRaw <= date(DB_DATE_FORMAT, $now);
+        $public = in_array($type, ['published', 'sticky', 'static'], true) || ($type === 'scheduled' && $due);
+        if (!$public) {
+            return 'none';
+        }
+        return $due ? 'count' : 'redirect';
+    }
+
+    /**
+     * Zähl-Adresse: Webhook mit Quelle und Episoden-UUID, am Ende der
+     * Dateiname der Audiodatei (Apple verlangt eine Dateiendung in der
+     * Enclosure-URL; der Webhook beachtet ihn nicht).
+     */
+    private function downloadUrl($uuid, $source, $audioUrl) {
+        $file = rawurldecode(basename((string) parse_url((string) $audioUrl, PHP_URL_PATH)));
+        $ext  = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+        $name = pathinfo($file, PATHINFO_FILENAME) !== '' ? $this->sanitizeFilename(pathinfo($file, PATHINFO_FILENAME)) : 'episode';
+        $ext  = preg_match('/^[a-z0-9]{1,5}$/D', $ext) === 1 ? $ext : 'mp3';
+        return DOMAIN_BASE . self::STATS_WEBHOOK . '/' . $source . '/' . $uuid . '/' . $name . '.' . $ext;
+    }
+
+    /**
+     * Audio-Adresse für Feed ($source 'feed') und Player ('player'): mit
+     * eingeschalteter Zählung die Zähl-Adresse, sonst die gespeicherte. Nicht
+     * öffentliche Episoden (Vorschau eines Entwurfs) behalten die gespeicherte,
+     * der Webhook würde sie mit 404 ablehnen.
+     */
+    private function publicAudioUrl($page, $source, $audioUrl) {
+        if ($audioUrl === '' || !$this->countDownloads()) {
+            return $audioUrl;
+        }
+        $uuid = $page->uuid();
+        if (!is_string($uuid) || preg_match('/^[a-f0-9]{32}$/D', $uuid) !== 1
+            || $this->downloadState((string) $page->type(), $page->dateRaw(), time()) === 'none') {
+            return $audioUrl;
+        }
+        return $this->downloadUrl($uuid, $source, $audioUrl);
+    }
+
+    /** Quelle und UUID aus dem Pfad nach dem Webhook („/feed/<uuid>/name.mp3“), sonst null. */
+    private function downloadRoute($rest) {
+        if (!is_string($rest) || preg_match('#^/(feed|player)/([a-f0-9]{32})(?:/|$)#D', $rest, $m) !== 1) {
+            return null;
+        }
+        return ['source' => $m[1], 'uuid' => $m[2]];
+    }
+
+    /** Episode zur UUID, sonst null. Strenger Vergleich (Pages::getByUUID() vergleicht mit ==). */
+    private function episodeByUuid($uuid) {
+        global $pages;
+
+        foreach ($pages->getDB(false) as $key => $fields) {
+            if (isset($fields['uuid']) && $fields['uuid'] === $uuid) {
+                try {
+                    $page = new Page($key);
+                } catch (Exception $e) {
+                    return null;
+                }
+                return $this->pageHasPodcastTag($page) ? $page : null;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Webhook: zählt den Abruf und leitet per 302 (nicht 301: Clients dürften
+     * ihn dauerhaft speichern und den Zähler überspringen) auf die gespeicherte
+     * Audio-Adresse weiter — nie auf einen Wert aus der Anfrage. Leitet auch
+     * weiter, wenn die Zählung abgeschaltet ist (Feeds und Seiten im
+     * Zwischenspeicher behalten die Zähl-Adresse). Unbekannte oder nicht
+     * öffentliche Episode: 404.
+     */
+    private function handleDownload($rest) {
+        $now   = time();
+        $route = $this->downloadRoute($rest);
+        $page  = $route !== null ? $this->episodeByUuid($route['uuid']) : null;
+        $state = $page !== null ? $this->downloadState((string) $page->type(), $page->dateRaw(), $now) : 'none';
+        $audio = $page !== null ? $this->getEpisodeMeta($page)['audio_url'] : '';
+
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+        header('Cache-Control: no-store');
+        if ($route === null || $state === 'none' || $audio === '') {
+            http_response_code(404);
+            header('Content-Type: text/plain; charset=UTF-8');
+            echo 'Not Found';
+            return;
+        }
+        if ($state === 'count' && $this->countDownloads()) {
+            try {
+                $this->recordDownload($_SERVER, $route['uuid'], $route['source'], $now);
+            } catch (Throwable $e) {
+                // Die Weiterleitung hat Vorrang; Fehler nur ins Log
+                Log::set(__METHOD__ . LOG_SEP . $e->getMessage());
+            }
+        }
+        header('Location: ' . $this->headerUrl($audio), true, 302);
+    }
+
+    /** Adresse für eine Kopfzeile: Leer- und Steuerzeichen prozentkodiert. */
+    private function headerUrl($url) {
+        return (string) preg_replace_callback('/[\x00-\x20\x7f]/', function ($m) {
+            return rawurlencode($m[0]);
+        }, (string) $url);
+    }
+
+    /**
+     * Schreibt einen Abruf ins Rohprotokoll des Tages. Der erste Abruf eines
+     * neuen Tages erzeugt einen neuen Salt und startet die Pflege
+     * (statsMaintenance(): Vortage zusammenfassen, Altes löschen).
+     */
+    private function recordDownload(array $server, $uuid, $source, $now) {
+        $day = date('Y-m-d', $now);
+        if (!$this->statsPrepareDir()) {
+            throw new RuntimeException('Statistics folder in the workspace is not writable.');
+        }
+        [$salt, $newDay] = $this->statsSalt($day);
+        $entry = $this->downloadEntry($server, $uuid, $source, $now, $salt);
+        if ($entry !== null) {
+            $this->statsAppend($day, $entry);
+        }
+        if ($newDay) {
+            $this->statsMaintenance($day);
+        }
+    }
+
+    /**
+     * Eintrag fürs Rohprotokoll: [Zeit, UUID, Quelle, Range, User-Agent, Hash]
+     * oder null, wenn der Abruf nicht zählt (nicht GET, z. B. HEAD; keine
+     * gültige IP). Hash = HMAC-SHA-256 mit dem Tages-Salt über gekürzte IP,
+     * User-Agent und Episode; die IP selbst wird nicht gespeichert.
+     * @return array{0: int, 1: string, 2: string, 3: string, 4: string, 5: string}|null
+     */
+    private function downloadEntry(array $server, $uuid, $source, $now, $salt) {
+        if (($server['REQUEST_METHOD'] ?? '') !== 'GET') {
+            return null;
+        }
+        $client = $this->downloadClient($server['REMOTE_ADDR'] ?? null);
+        if ($client === '') {
+            return null;
+        }
+        $agent = $this->headerValue($server['HTTP_USER_AGENT'] ?? null, self::STATS_UA_MAX);
+        $range = $this->headerValue($server['HTTP_RANGE'] ?? null, self::STATS_RANGE_MAX);
+        $hash  = substr(hash_hmac('sha256', $client . "\n" . $agent . "\n" . $uuid, $salt), 0, 32);
+        return [(int) $now, (string) $uuid, (string) $source, $range, $agent, $hash];
+    }
+
+    /**
+     * Teil der IP für den Hash: IPv4 vollständig, IPv6 je /64-Netz (Geräte
+     * wechseln dort die Adresse). Nur REMOTE_ADDR — X-Forwarded-For und
+     * X-Real-IP kann jeder setzen. Ungültig: ''.
+     */
+    private function downloadClient($ip) {
+        if (!is_string($ip) || filter_var($ip, FILTER_VALIDATE_IP) === false) {
+            return '';
+        }
+        $bin = (string) inet_pton($ip);
+        if (strlen($bin) === 16 && strncmp($bin, str_repeat("\0", 10) . "\xff\xff", 12) === 0) {
+            $bin = substr($bin, 12); // IPv4 in IPv6-Schreibweise (::ffff:1.2.3.4)
+        }
+        if (strlen($bin) === 4) {
+            return (string) inet_ntop($bin);
+        }
+        return strlen($bin) === 16 ? bin2hex(substr($bin, 0, 8)) . '/64' : '';
+    }
+
+    /** Kopfzeile als Text: ohne Steuerzeichen, gekürzt (gültiges UTF-8 bleibt ganz). */
+    private function headerValue($value, $max) {
+        if (!is_string($value)) {
+            return '';
+        }
+        $value = trim((string) preg_replace('/[\x00-\x1f\x7f]+/', ' ', $value));
+        return strlen($value) > $max ? mb_strcut($value, 0, $max, 'UTF-8') : $value;
+    }
+
+    /** Probe-Anfrage einer App (bytes=0-0, bytes=0-1)? Groß-/Kleinschreibung und Leerzeichen egal. */
+    private function isProbeRange($range) {
+        return in_array(strtolower((string) preg_replace('/\s+/', '', (string) $range)), self::STATS_PROBE_RANGES, true);
+    }
+
+    // ── Ablage im Workspace
+
+    private function statsDir() {
+        return $this->workspace() . 'stats' . DS;
+    }
+
+    private function statsPrepareDir() {
+        $dir = $this->statsDir();
+        return is_dir($dir) || @mkdir($dir, DIR_PERMISSIONS, true);
+    }
+
+    private function statsRawPath($day) {
+        return $this->statsDir() . 'raw-' . $day . '.php';
+    }
+
+    private function statsSumsPath($month) {
+        return $this->statsDir() . 'sums-' . $month . '.php';
+    }
+
+    /** Inhalt einer Workspace-Datei ohne Schutzzeile. */
+    private function withoutGuard($content) {
+        return (string) preg_replace('/^<\?php[^\n]*\n/', '', (string) $content);
+    }
+
+    /**
+     * Salt des Tages (64 Hex-Zeichen) und ob er gerade erzeugt wurde. Ein Salt
+     * eines anderen Tages wird ersetzt. Unter flock, damit gleichzeitige Abrufe
+     * denselben Salt verwenden.
+     * @return array{0: string, 1: bool}
+     */
+    private function statsSalt($day) {
+        $fh = fopen($this->statsDir() . 'salt.php', 'c+');
+        if ($fh === false) {
+            throw new RuntimeException('Could not open the salt file.');
+        }
+        try {
+            flock($fh, LOCK_EX);
+            $data = json_decode($this->withoutGuard(stream_get_contents($fh)), true);
+            if (is_array($data) && ($data['day'] ?? null) === $day && is_string($data['salt'] ?? null)
+                && preg_match('/^[a-f0-9]{64}$/D', $data['salt']) === 1) {
+                return [$data['salt'], false];
+            }
+            $salt = bin2hex(random_bytes(32));
+            ftruncate($fh, 0);
+            rewind($fh);
+            fwrite($fh, self::WORKSPACE_GUARD . json_encode(['day' => $day, 'salt' => $salt]));
+            fflush($fh);
+            return [$salt, true];
+        } finally {
+            flock($fh, LOCK_UN);
+            fclose($fh);
+        }
+    }
+
+    /**
+     * Leert den Salt eines vergangenen Tages ($force: auch den von heute):
+     * danach lassen sich die Hashes dieses Tages keiner IP mehr zuordnen,
+     * auch nicht in Sicherungen. Läuft bei jedem Seitenaufruf, daher erst
+     * die billige Prüfung über Größe und Änderungszeit.
+     */
+    private function expireStatsSalt($today, $force = false) {
+        $file = $this->statsDir() . 'salt.php';
+        clearstatcache(true, $file);
+        if (!is_file($file) || filesize($file) === 0 || (!$force && date('Y-m-d', (int) filemtime($file)) === $today)) {
+            return;
+        }
+        $fh = @fopen($file, 'r+');
+        if ($fh === false) {
+            return;
+        }
+        flock($fh, LOCK_EX);
+        $data = json_decode($this->withoutGuard(stream_get_contents($fh)), true);
+        if ($force || !is_array($data) || ($data['day'] ?? null) !== $today) {
+            ftruncate($fh, 0);
+        }
+        flock($fh, LOCK_UN);
+        fclose($fh);
+    }
+
+    /**
+     * Hängt einen Eintrag ans Rohprotokoll des Tages (JSON je Zeile, ohne „<“
+     * wegen der .php-Datei). Liefert false, wenn das Tageslimit erreicht ist.
+     */
+    private function statsAppend($day, array $entry) {
+        $line = json_encode($entry, JSON_HEX_TAG | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        $fh   = $line !== false ? fopen($this->statsRawPath($day), 'a') : false;
+        if ($fh === false) {
+            throw new RuntimeException('Could not write the download log.');
+        }
+        flock($fh, LOCK_EX);
+        $stat    = fstat($fh);
+        $size    = $stat !== false ? (int) $stat['size'] : 0;
+        $written = $size < self::STATS_RAW_MAX_BYTES;
+        if ($size === 0) {
+            fwrite($fh, self::WORKSPACE_GUARD);
+        }
+        if ($written) {
+            fwrite($fh, $line . "\n");
+            fflush($fh);
+        }
+        flock($fh, LOCK_UN);
+        fclose($fh);
+        if (!$written) {
+            Log::set(__METHOD__ . LOG_SEP . 'Download log of ' . $day . ' is full, further requests are not counted.');
+        }
+        return $written;
+    }
+
+    /**
+     * Komprimiert Text für die Ablage: gzip, als Base64 mit „gz:“ davor (eine
+     * Zeile, kein „<?“ in der .php-Datei). Ohne zlib bleibt er unverändert.
+     */
+    private function statsEncode($text) {
+        $gz = function_exists('gzencode') ? gzencode($text, 6) : false;
+        return $gz !== false ? 'gz:' . base64_encode($gz) : $text;
+    }
+
+    /** Zeilen einer Datei ohne Schutzzeile; komprimierte Zeilen („gz:…“) entpackt. @return string[] */
+    private function statsLines($content) {
+        $lines = [];
+        foreach (explode("\n", $this->withoutGuard($content)) as $line) {
+            if (strncmp($line, 'gz:', 3) === 0) {
+                $data = base64_decode(substr($line, 3), true);
+                $text = $data !== false && function_exists('gzdecode') ? @gzdecode($data) : false;
+                if ($text === false) {
+                    Log::set(__METHOD__ . LOG_SEP . 'Unreadable compressed statistics data skipped.');
+                    continue;
+                }
+                $lines = array_merge($lines, explode("\n", $text));
+            } else {
+                $lines[] = $line;
+            }
+        }
+        return array_values(array_filter($lines, function ($line) { return $line !== ''; }));
+    }
+
+    /** Schreibt eine Datei im Statistik-Ordner vollständig neu (temporäre Datei, dann rename()). */
+    private function statsWrite($path, $content) {
+        $tmp = $path . '.tmp-' . bin2hex(random_bytes(6)) . '.php';
+        if (file_put_contents($tmp, self::WORKSPACE_GUARD . $content, LOCK_EX) === false || !rename($tmp, $path)) {
+            @unlink($tmp);
+            throw new RuntimeException('Could not write ' . basename($path));
+        }
+    }
+
+    /**
+     * Geprüfte Einträge des Rohprotokolls eines Tages, einer nach dem anderen
+     * (ein voller Tag passt so in wenig Speicher).
+     * @return Generator<int, array{0: int, 1: string, 2: string, 3: string, 4: string, 5: string}>
+     */
+    private function statsRawStream($day) {
+        $path = $this->statsRawPath($day);
+        if (!is_file($path)) {
+            return;
+        }
+        foreach ($this->statsLines((string) file_get_contents($path)) as $line) {
+            $e = json_decode($line, true);
+            if (is_array($e) && count($e) === 6 && is_int($e[0] ?? null)
+                && is_string($e[1] ?? null) && preg_match('/^[a-f0-9]{32}$/D', $e[1]) === 1
+                && in_array($e[2] ?? null, self::STATS_SOURCES, true)
+                && is_string($e[3] ?? null) && is_string($e[4] ?? null) && is_string($e[5] ?? null)) {
+                yield [$e[0], $e[1], $e[2], $e[3], $e[4], $e[5]];
+            }
+        }
+    }
+
+    /**
+     * Downloads eines Tages aus dem Rohprotokoll: ohne Probe-Anfragen über den
+     * Feed (beim Player zählen sie, siehe STATS_PROBE_RANGES), jeder Hash
+     * (gleiche IP, gleicher User-Agent, gleiche Episode) nur einmal,
+     * zugeordnet der ersten Anfrage. Bots bleiben enthalten: gespeichert wird
+     * je User-Agent, gefiltert erst beim Anzeigen (neue Bot-Liste wirkt auch
+     * auf alte Tage).
+     * @param iterable<array{0: int, 1: string, 2: string, 3: string, 4: string, 5: string}> $entries
+     * @return array<string, array<string, array<string, int>>> UUID → Quelle → User-Agent → Anzahl
+     */
+    private function statsAggregate(iterable $entries) {
+        $seen   = [];
+        $counts = [];
+        foreach ($entries as $entry) {
+            [, $uuid, $source, $range, $agent, $hash] = $entry;
+            if (($source === 'feed' && $this->isProbeRange($range)) || isset($seen[$hash])) {
+                continue;
+            }
+            $seen[$hash] = true;
+            $counts[$uuid][$source][$agent] = ($counts[$uuid][$source][$agent] ?? 0) + 1;
+        }
+        return $counts;
+    }
+
+    /** Tage mit Rohprotokoll ('raw') bzw. Monate mit Summen ('sums') oder Abonnentenzahlen ('subs'), aufsteigend. @return string[] */
+    private function statsFiles($kind) {
+        $dir     = $this->statsDir();
+        $pattern = $kind === 'raw' ? '/^raw-(\d{4}-\d{2}-\d{2})\.php$/D' : '/^' . ($kind === 'subs' ? 'subs' : 'sums') . '-(\d{4}-\d{2})\.php$/D';
+        $found   = [];
+        foreach (is_dir($dir) ? (scandir($dir) ?: []) : [] as $name) {
+            if (preg_match($pattern, $name, $m) === 1) {
+                $found[] = $m[1];
+            }
+        }
+        sort($found);
+        return $found;
+    }
+
+    /**
+     * Summen eines Monats. Gespeichert mit einer Tabelle der User-Agents
+     * (jeder einmal je Monat): {"ua": [...], "days": {Tag: {UUID: {Quelle: {UA-Index: Anzahl}}}}}.
+     * @return array<string, array<string, array<string, array<string, int>>>> Tag → UUID → Quelle → User-Agent → Anzahl
+     */
+    private function statsMonthCounts($month) {
+        $path = $this->statsSumsPath($month);
+        $data = is_file($path) ? json_decode(implode("\n", $this->statsLines((string) file_get_contents($path))), true) : null;
+        if (!is_array($data) || !is_array($data['ua'] ?? null) || !is_array($data['days'] ?? null)) {
+            return [];
+        }
+        $agents = $data['ua'];
+        $days   = [];
+        foreach ($data['days'] as $day => $episodes) {
+            if (!is_string($day) || preg_match('/^\d{4}-\d{2}-\d{2}$/D', $day) !== 1 || !is_array($episodes)) {
+                continue;
+            }
+            $days[$day] = [];
+            foreach ($episodes as $uuid => $sources) {
+                foreach (is_array($sources) ? $sources : [] as $source => $counts) {
+                    if (!in_array($source, self::STATS_SOURCES, true) || !is_array($counts)) {
+                        continue;
+                    }
+                    foreach ($counts as $index => $count) {
+                        if (is_int($count) && $count > 0 && isset($agents[$index]) && is_string($agents[$index])) {
+                            $days[$day][(string) $uuid][$source][$agents[$index]] = $count;
+                        }
+                    }
+                }
+            }
+        }
+        return $days;
+    }
+
+    /**
+     * Speichert Tage in die Summen ihres Monats; vorhandene Werte dieser Tage
+     * werden ersetzt (Neuberechnung), die Tabelle der User-Agents neu gebildet.
+     * @param array<string, array<string, array<string, array<string, int>>>> $days Tag → UUID → Quelle → User-Agent → Anzahl
+     */
+    private function statsSaveDays($month, array $days) {
+        $all = array_merge($this->statsMonthCounts($month), $days);
+        ksort($all);
+        $agents = [];
+        $packed = [];
+        foreach ($all as $day => $episodes) {
+            $packed[$day] = [];
+            foreach ($episodes as $uuid => $sources) {
+                foreach ($sources as $source => $counts) {
+                    foreach ($counts as $agent => $count) {
+                        $agent = (string) $agent;
+                        if (!isset($agents[$agent])) {
+                            $agents[$agent] = count($agents);
+                        }
+                        $packed[$day][$uuid][$source][$agents[$agent]] = $count;
+                    }
+                }
+            }
+        }
+        $json = json_encode(['ua' => array_map('strval', array_keys($agents)), 'days' => $packed],
+            JSON_HEX_TAG | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($json === false) {
+            throw new RuntimeException('Could not encode download sums.');
+        }
+        $this->statsWrite($this->statsSumsPath($month), $this->statsEncode($json) . "\n");
+    }
+
+    /**
+     * Komprimiert das Rohprotokoll eines abgeschlossenen Tages, wenn es noch
+     * nicht komprimiert ist (erkannt am Anfang, ohne die Datei zu lesen).
+     */
+    private function statsCompressRaw($day) {
+        $path = $this->statsRawPath($day);
+        $head = (string) @file_get_contents($path, false, null, 0, strlen(self::WORKSPACE_GUARD) + 3);
+        if (!function_exists('gzencode') || $head === '' || substr($head, -3) === 'gz:') {
+            return;
+        }
+        $lines = $this->statsLines((string) file_get_contents($path));
+        $this->statsWrite($path, $lines ? $this->statsEncode(implode("\n", $lines) . "\n") . "\n" : '');
+    }
+
+    /**
+     * Pflege ohne Cron (Bludit hat keinen): beim ersten Abruf eines neuen
+     * Tages und beim Öffnen der Statistik. Fasst abgeschlossene Tage ohne
+     * Summen zusammen ($recalculate: alle Tage mit Rohdaten neu), komprimiert
+     * ihre Rohprotokolle, löscht Rohprotokolle nach STATS_RAW_DAYS Tagen und
+     * den Salt vergangener Tage. Läuft nur einmal gleichzeitig; ohne
+     * $recalculate wird bei laufender Pflege nicht gewartet.
+     * Liefert die Zahl der zusammengefassten Tage.
+     */
+    private function statsMaintenance($today, $recalculate = false) {
+        $this->expireStatsSalt($today);
+        $dir = $this->statsDir();
+        if (!is_dir($dir)) {
+            return 0;
+        }
+        $lock = fopen($dir . 'lock.php', 'c');
+        if ($lock === false) {
+            return 0;
+        }
+        if (!flock($lock, $recalculate ? LOCK_EX : LOCK_EX | LOCK_NB)) {
+            fclose($lock);
+            return 0;
+        }
+        try {
+            $stat = fstat($lock);
+            if ($stat !== false && $stat['size'] === 0) {
+                fwrite($lock, self::WORKSPACE_GUARD);
+            }
+            $oldest  = date('Y-m-d', (int) strtotime($today . ' 12:00:00 -' . (self::STATS_RAW_DAYS - 1) . ' days'));
+            $pending = [];
+            $done    = [];
+            $sums    = [];
+            foreach ($this->statsFiles('raw') as $day) {
+                if ($day < $oldest) {
+                    @unlink($this->statsRawPath($day));
+                    continue;
+                }
+                if ($day >= $today) {
+                    continue;
+                }
+                $month = substr($day, 0, 7);
+                if (!$recalculate) {
+                    $sums[$month] = $sums[$month] ?? $this->statsMonthCounts($month);
+                    if (array_key_exists($day, $sums[$month])) {
+                        $done[] = $day;
+                        continue;
+                    }
+                }
+                $pending[$month][$day] = $this->statsAggregate($this->statsRawStream($day));
+            }
+            $count = 0;
+            foreach ($pending as $month => $days) {
+                $this->statsSaveDays($month, $days);
+                $done  = array_merge($done, array_keys($days));
+                $count += count($days);
+            }
+            foreach ($done as $day) {
+                $this->statsCompressRaw($day);
+            }
+            // Reste abgebrochener Schreibvorgänge
+            foreach (glob($dir . '*.tmp-*.php') ?: [] as $tmp) {
+                if ((int) @filemtime($tmp) < time() - 3600) {
+                    @unlink($tmp);
+                }
+            }
+            return $count;
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
+    }
+
+    /** Speicherbedarf der Statistik in Bytes: ['raw' => Rohprotokolle, 'sums' => Summen und Abonnentenzahlen]. */
+    private function statsStorage() {
+        $raw  = 0;
+        $sums = 0;
+        foreach ($this->statsFiles('raw') as $day) {
+            $raw += (int) @filesize($this->statsRawPath($day));
+        }
+        foreach ($this->statsFiles('sums') as $month) {
+            $sums += (int) @filesize($this->statsSumsPath($month));
+        }
+        foreach ($this->statsFiles('subs') as $month) {
+            $sums += (int) @filesize($this->statsSubsPath($month));
+        }
+        return ['raw' => $raw, 'sums' => $sums];
+    }
+
+    // ── Wer hat abgerufen? (OPAWG-Listen, data/SOURCE.md)
+
+    /** Listen für Bots, Apps, Programmbibliotheken und Browser in der Reihenfolge der Prüfung: Datei => Art. */
+    private const OPAWG_CLIENTS = ['extra-bots.json' => 'bot', 'opawg-bots.json' => 'bot', 'opawg-apps.json' => 'app',
+        'opawg-libraries.json' => 'library', 'opawg-browsers.json' => 'browser'];
+
+    /** So viele Muster prüft ein Vorfilter auf einmal. */
+    private const OPAWG_CHUNK = 40;
+
+    /**
+     * Muster einer OPAWG-Liste als PCRE mit dem Trennzeichen ~ (ein
+     * unmaskiertes ~ im Muster wird maskiert), ohne Optionen wie in der
+     * OPAWG-Beschreibung. '' bei ungültigem Muster.
+     */
+    private function opawgRegex($pattern) {
+        if (!is_string($pattern) || $pattern === '' || preg_match('/[\x00-\x1f]/', $pattern) === 1) {
+            return '';
+        }
+        $regex = '';
+        for ($i = 0, $n = strlen($pattern); $i < $n; $i++) {
+            if ($pattern[$i] === '\\' && $i + 1 < $n) {
+                $regex .= $pattern[$i] . $pattern[++$i];
+            } else {
+                $regex .= $pattern[$i] === '~' ? '\~' : $pattern[$i];
+            }
+        }
+        $regex = '~' . $regex . '~';
+        return @preg_match($regex, '') === false ? '' : $regex;
+    }
+
+    /**
+     * Die Listen 'clients' (Bots samt eigener Ergänzung, Apps, Bibliotheken,
+     * Browser) und 'devices', je mit ihren Einträgen und Vorfiltern: je
+     * OPAWG_CHUNK Muster zu einem Ausdruck verbunden, damit je User-Agent nur
+     * wenige preg_match()-Aufrufe nötig sind.
+     * @return array<string, array{entries: array<int, array{name: string, kind: string, category: string, regex: string}>, chunks: string[]}>
+     */
+    private function opawgLists() {
+        if ($this->opawg !== null) {
+            return $this->opawg;
+        }
+        $lists = [];
+        foreach (['clients' => self::OPAWG_CLIENTS, 'devices' => ['opawg-devices.json' => 'device']] as $list => $files) {
+            $entries = [];
+            foreach ($files as $file => $kind) {
+                $data = json_decode((string) @file_get_contents($this->phpPath() . 'data' . DS . $file), true);
+                foreach (is_array($data) && is_array($data['entries'] ?? null) ? $data['entries'] : [] as $entry) {
+                    $regex = is_array($entry) && is_string($entry['name'] ?? null) ? $this->opawgRegex($entry['pattern'] ?? null) : '';
+                    if ($regex !== '') {
+                        $entries[] = ['name' => $entry['name'], 'kind' => $kind, 'regex' => $regex,
+                            'category' => is_string($entry['category'] ?? null) ? $entry['category'] : ''];
+                    }
+                }
+            }
+            $chunks = [];
+            foreach (array_chunk($entries, self::OPAWG_CHUNK) as $chunk) {
+                $chunks[] = '~' . implode('|', array_map(function ($entry) {
+                    return '(?:' . substr($entry['regex'], 1, -1) . ')';
+                }, $chunk)) . '~';
+            }
+            $lists[$list] = ['entries' => $entries, 'chunks' => $chunks];
+        }
+        if ($lists['clients']['entries'] === []) {
+            Log::set(__METHOD__ . LOG_SEP . 'OPAWG lists missing or invalid, bots are not filtered.');
+        }
+        $this->opawg = $lists;
+        return $lists;
+    }
+
+    /** Erster passende Eintrag einer Liste in ihrer Reihenfolge, sonst null. */
+    private function opawgMatch($list, $agent) {
+        $lists = $this->opawgLists();
+        foreach ($lists[$list]['chunks'] as $index => $chunk) {
+            // Vorfilter: 0 = kein Muster dieser Gruppe passt (false: einzeln prüfen)
+            if (@preg_match($chunk, $agent) === 0) {
+                continue;
+            }
+            foreach (array_slice($lists[$list]['entries'], $index * self::OPAWG_CHUNK, self::OPAWG_CHUNK) as $entry) {
+                if (preg_match($entry['regex'], $agent) === 1) {
+                    return $entry;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Wer hat abgerufen, wie in der OPAWG-Beschreibung: der erste passende
+     * Eintrag aus Bots, Apps, Bibliotheken und Browsern, dazu das Gerät.
+     * Bot = Eintrag der Bot-Listen, Bibliothek der Kategorie „bot“ oder kein
+     * User-Agent (Podcast-Apps und Browser senden immer einen); Bots zählen nicht.
+     * @return array{bot: bool, kind: string, name: string, device: string} kind: app, browser, library, bot oder '' (unbekannt)
+     */
+    private function statsClient($agent) {
+        $agent = (string) $agent;
+        if (isset($this->clientCache[$agent])) {
+            return $this->clientCache[$agent];
+        }
+        $entry  = $agent !== '' ? $this->opawgMatch('clients', $agent) : null;
+        $bot    = $agent === '' || ($entry !== null && ($entry['kind'] === 'bot' || ($entry['kind'] === 'library' && $entry['category'] === 'bot')));
+        $device = $bot ? null : $this->opawgMatch('devices', $agent);
+        $client = [
+            'bot'    => $bot,
+            'kind'   => $bot ? 'bot' : ($entry !== null ? $entry['kind'] : ''),
+            'name'   => $entry !== null ? $entry['name'] : '',
+            'device' => $device !== null ? $device['name'] : '',
+        ];
+        if (count($this->clientCache) < 20000) {
+            $this->clientCache[$agent] = $client;
+        }
+        return $client;
+    }
+
+    /** Bezeichnung für die Aufschlüsselung nach App; Browser und Bibliotheken als solche gekennzeichnet. */
+    private function clientLabel(array $client) {
+        switch ($client['kind']) {
+            case 'app':
+                return $client['name'];
+            case 'browser':
+                return $this->text('stats-browser', ['name' => $client['name']]);
+            case 'library':
+                return $this->text('stats-library', ['name' => $client['name']]);
+            default:
+                return $this->text('stats-unknown');
+        }
+    }
+
+    // ── Auswertung
+
+    /** Zeiträume der Übersicht: Schlüssel => Tage bis heute (0 = gesamt). */
+    private const STATS_PERIODS = ['30' => 30, '90' => 90, '365' => 365, 'all' => 0];
+
+    /** Kennzahlen je Episode: Downloads in den ersten n Tagen ab dem Tag der Veröffentlichung (wie Podlove). */
+    private const STATS_WINDOWS = ['d1' => 1, 'd7' => 7, 'd28' => 28, 'd91' => 91];
+
+    /**
+     * Alle Tage mit Summen, heute live aus dem Rohprotokoll.
+     * @return Generator<string, array<string, array<string, array<string, int>>>> Tag → UUID → Quelle → User-Agent → Anzahl
+     */
+    private function statsAllDays($today) {
+        foreach ($this->statsFiles('sums') as $month) {
+            foreach ($this->statsMonthCounts($month) as $day => $episodes) {
+                if ($day < $today) {
+                    yield $day => $episodes;
+                }
+            }
+        }
+        yield $today => $this->statsAggregate($this->statsRawStream($today));
+    }
+
+    /**
+     * Auswertung ohne Bots in einem Durchgang: Downloads je Tag und Episode
+     * (für Kennzahlen und Verlauf) und die Aufschlüsselung nach App, Plattform
+     * und Quelle für die Tage ab $from (JJJJ-MM-TT, '' = alle), auf Wunsch
+     * nur für eine Episode.
+     * @param iterable<string, array<string, array<string, array<string, int>>>> $days Tag → UUID → Quelle → User-Agent → Anzahl
+     * @return array{daily: array<string, array<string, int>>, apps: array<string, int>, devices: array<string, int>, sources: array<string, int>}
+     */
+    private function statsCollectFrom(iterable $days, $from, $episode = '') {
+        $result = ['daily' => [], 'apps' => [], 'devices' => [], 'sources' => []];
+        foreach ($days as $day => $episodes) {
+            $day = (string) $day;
+            $result['daily'][$day] = $result['daily'][$day] ?? [];
+            foreach ($episodes as $uuid => $sources) {
+                $uuid = (string) $uuid;
+                foreach ($sources as $source => $counts) {
+                    foreach ($counts as $agent => $count) {
+                        $client = $this->statsClient((string) $agent);
+                        if ($client['bot']) {
+                            continue;
+                        }
+                        $result['daily'][$day][$uuid] = ($result['daily'][$day][$uuid] ?? 0) + $count;
+                        if ($day < $from || ($episode !== '' && $episode !== $uuid)) {
+                            continue;
+                        }
+                        $app    = $this->clientLabel($client);
+                        $device = $client['device'] !== '' ? $client['device'] : $this->text('stats-unknown');
+                        $result['apps'][$app]          = ($result['apps'][$app] ?? 0) + $count;
+                        $result['devices'][$device]    = ($result['devices'][$device] ?? 0) + $count;
+                        $result['sources'][$source]    = ($result['sources'][$source] ?? 0) + $count;
+                    }
+                }
+            }
+        }
+        return $result;
+    }
+
+    /** Tag (JJJJ-MM-TT) als fortlaufende Nummer, für Abstände in Tagen. */
+    private function dayNumber($day) {
+        $date = DateTime::createFromFormat('!Y-m-d', (string) $day, new DateTimeZone('UTC'));
+        return $date !== false ? intdiv($date->getTimestamp(), 86400) : 0;
+    }
+
+    /** Tag zur fortlaufenden Nummer (Gegenstück zu dayNumber()). */
+    private function dayFromNumber($number) {
+        return gmdate('Y-m-d', (int) $number * 86400);
+    }
+
+    /**
+     * Kennzahlen: je Episode die Downloads in den ersten 1, 7, 28 und 91 Tagen
+     * ab dem Tag der Veröffentlichung (dieser Tag eingeschlossen) und gesamt,
+     * dazu alle Downloads ab $from ('' = gesamt) und die gelöschter Episoden.
+     * @param array<string, array<string, int>> $daily Tag → UUID → Anzahl
+     * @param array<string, string> $published UUID → Tag der Veröffentlichung
+     * @return array{episodes: array<string, array<string, int>>, period: int, other: int}
+     */
+    private function statsSummaryFrom(array $daily, array $published, $from) {
+        $episodes = [];
+        $period   = 0;
+        $other    = 0;
+        foreach ($published as $uuid => $day) {
+            $episodes[(string) $uuid] = array_fill_keys(array_keys(self::STATS_WINDOWS), 0) + ['total' => 0];
+        }
+        foreach ($daily as $day => $counts) {
+            $dayNumber = $this->dayNumber($day);
+            foreach ($counts as $uuid => $count) {
+                $uuid = (string) $uuid;
+                if ((string) $day >= $from) {
+                    $period += $count;
+                }
+                if (!isset($published[$uuid])) {
+                    $other += $count;
+                    continue;
+                }
+                $age = $dayNumber - $this->dayNumber($published[$uuid]);
+                $episodes[$uuid]['total'] += $count;
+                foreach (self::STATS_WINDOWS as $key => $days) {
+                    if ($age >= 0 && $age < $days) {
+                        $episodes[$uuid][$key] += $count;
+                    }
+                }
+            }
+        }
+        return ['episodes' => $episodes, 'period' => $period, 'other' => $other];
+    }
+
+    /**
+     * Verlauf für das Diagramm von $from bis $to: Downloads je Tag (bis 92
+     * Tage), je Woche ab Montag (bis zwei Jahre) oder je Monat.
+     * @param array<string, int> $totals Tag → Downloads
+     * @return array{unit: string, points: array<int, array{start: string, value: int}>}
+     */
+    private function statsSeries(array $totals, $from, $to) {
+        $first = $this->dayNumber($from);
+        $last  = max($first, $this->dayNumber($to));
+        $span  = $last - $first + 1;
+        $unit  = $span <= 92 ? 'day' : ($span <= 731 ? 'week' : 'month');
+        $sums  = [];
+        for ($number = $first; $number <= $last; $number++) {
+            $day = $this->dayFromNumber($number);
+            if ($unit === 'week') {
+                // 1970-01-01 war ein Donnerstag: (Nummer + 3) % 7 = Tage seit Montag
+                $start = $this->dayFromNumber($number - ($number + 3) % 7);
+            } else {
+                $start = $unit === 'month' ? substr($day, 0, 7) . '-01' : $day;
+            }
+            $sums[$start] = ($sums[$start] ?? 0) + (int) ($totals[$day] ?? 0);
+        }
+        $points = [];
+        foreach ($sums as $start => $value) {
+            $points[] = ['start' => (string) $start, 'value' => $value];
+        }
+        return ['unit' => $unit, 'points' => $points];
+    }
+
+    /** Downloads je Tag, aller Episoden oder einer. @return array<string, int> */
+    private function statsDayTotals(array $daily, $episode = '') {
+        $totals = [];
+        foreach ($daily as $day => $counts) {
+            $totals[(string) $day] = $episode === '' ? array_sum($counts) : (int) ($counts[$episode] ?? 0);
+        }
+        return $totals;
+    }
+
+    /**
+     * Y-Achse mit runden Werten (1, 2 oder 5 × 10^n), höchstens fünf Abschnitte.
+     * @return array{0: int, 1: int} Obergrenze, Schritt
+     */
+    private function chartScale($max) {
+        $raw  = max(1, $max / 4);
+        $mag  = 10 ** floor(log10($raw));
+        $step = 10 * $mag;
+        foreach ([1, 2, 5] as $factor) {
+            if ($factor * $mag >= $raw) {
+                $step = $factor * $mag;
+                break;
+            }
+        }
+        $step = max(1, (int) $step);
+        return [max($step, (int) (ceil($max / $step) * $step)), $step];
+    }
+
+    // ── Abonnenten, die Dienste beim Abruf des Feeds melden
+
+    /** Höchstens so viele Dienste je Tag (ausgedachte User-Agents sollen die Datei nicht aufblähen). */
+    private const STATS_SUBS_MAX = 50;
+
+    private function statsSubsPath($month) {
+        return $this->statsDir() . 'subs-' . $month . '.php';
+    }
+
+    /**
+     * Abonnentenzahl, die ein Dienst im User-Agent des Feed-Abrufs meldet
+     * (Feedly, Inoreader, Overcast …): ['key', 'name', 'count'] oder null.
+     * Name aus „compatible; …“ oder dem ersten Wort, mit feed-id falls angegeben.
+     */
+    private function feedSubscribers($agent) {
+        if (!is_string($agent) || strlen($agent) > 1000
+            || preg_match('/\b(\d{1,9})\s+(?:subscribers?|readers?)\b/i', $agent, $m) !== 1) {
+            return null;
+        }
+        $name = '';
+        if (preg_match('/\bcompatible;\s*([^;)]{1,60})/i', $agent, $c) === 1) {
+            $name = trim($c[1]);
+        } elseif (preg_match('/^\s*([A-Za-z0-9][A-Za-z0-9._-]{0,59})/', $agent, $c) === 1) {
+            $name = $c[1];
+        }
+        $name   = $name !== '' && preg_match('/[\x00-\x1f\x7f]/', $name) !== 1 ? $name : '?';
+        $feedId = preg_match('/feed-?id[=:]\s*(\d{1,12})/i', $agent, $f) === 1 ? $f[1] : '';
+        return [
+            'key'   => strtolower($name) . ($feedId !== '' ? '#' . $feedId : ''),
+            'name'  => $name . ($feedId !== '' ? ' (' . $feedId . ')' : ''),
+            'count' => (int) $m[1],
+        ];
+    }
+
+    /**
+     * Merkt sich die gemeldete Abonnentenzahl eines Feed-Abrufs: je Tag und
+     * Dienst den höchsten Wert, in subs-JJJJ-MM.php. Ohne IP und ohne Hash;
+     * geschrieben wird nur, wenn sich etwas ändert.
+     */
+    private function recordFeedSubscribers($agent, $now) {
+        $report = $this->feedSubscribers($agent);
+        if ($report === null || !$this->statsPrepareDir()) {
+            return;
+        }
+        $day = date('Y-m-d', $now);
+        $fh  = fopen($this->statsSubsPath(substr($day, 0, 7)), 'c+');
+        if ($fh === false) {
+            return;
+        }
+        try {
+            flock($fh, LOCK_EX);
+            $data     = json_decode($this->withoutGuard(stream_get_contents($fh)), true);
+            $data     = is_array($data) ? $data : [];
+            $services = isset($data[$day]) && is_array($data[$day]) ? $data[$day] : [];
+            $old      = $services[$report['key']] ?? null;
+            $known    = is_array($old) && is_int($old[1] ?? null);
+            if (($known && $old[1] >= $report['count']) || (!$known && count($services) >= self::STATS_SUBS_MAX)) {
+                return;
+            }
+            $services[$report['key']] = [$report['name'], $report['count']];
+            $data[$day] = $services;
+            $json = json_encode($data, JSON_HEX_TAG | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+            if ($json !== false) {
+                ftruncate($fh, 0);
+                rewind($fh);
+                fwrite($fh, self::WORKSPACE_GUARD . $json);
+                fflush($fh);
+            }
+        } finally {
+            flock($fh, LOCK_UN);
+            fclose($fh);
+        }
+    }
+
+    /**
+     * Gemeldete Abonnenten: je Dienst der Wert des letzten Tages, an dem er in
+     * den letzten 30 Tagen gemeldet hat, größte zuerst.
+     * @return array<int, array{name: string, count: int, day: string}>
+     */
+    private function statsSubscribers($today) {
+        $from   = $this->dayFromNumber($this->dayNumber($today) - 29);
+        $latest = [];
+        foreach ($this->statsFiles('subs') as $month) {
+            if ($month < substr($from, 0, 7)) {
+                continue;
+            }
+            $data = json_decode($this->withoutGuard((string) @file_get_contents($this->statsSubsPath($month))), true);
+            foreach (is_array($data) ? $data : [] as $day => $services) {
+                if (!is_string($day) || preg_match('/^\d{4}-\d{2}-\d{2}$/D', $day) !== 1 || $day < $from || $day > $today || !is_array($services)) {
+                    continue;
+                }
+                foreach ($services as $key => $value) {
+                    if (!is_array($value) || !is_string($value[0] ?? null) || !is_int($value[1] ?? null) || $value[1] < 0) {
+                        continue;
+                    }
+                    if (!isset($latest[$key]) || $latest[$key]['day'] < $day) {
+                        $latest[$key] = ['name' => $value[0], 'count' => $value[1], 'day' => $day];
+                    }
+                }
+            }
+        }
+        $list = array_values($latest);
+        usort($list, function ($a, $b) {
+            return $b['count'] <=> $a['count'] ?: strcmp($a['name'], $b['name']);
+        });
+        return $list;
+    }
+
+    /** API „Neu berechnen“: Summen aller abgeschlossenen Tage mit Rohdaten neu bilden. */
+    private function handleStatsRecalculate() {
+        if (!$this->statsPrepareDir()) {
+            return ['error' => $this->text('error-internal')];
+        }
+        $count = $this->statsMaintenance(date('Y-m-d'), true);
+        return ['success' => true, 'notice' => $this->text('stats-recalculated', ['count' => $count])];
+    }
+
+    // ── Ansicht „Statistik“
+
+    /** Zahl mit Tausendertrennzeichen der Sitesprache. */
+    private function formatCount($count) {
+        return number_format((int) $count, 0, '', $this->text('thousands-separator'));
+    }
+
+    /** Tag (JJJJ-MM-TT) im Datumsformat der Sitesprache. */
+    private function formatDay($day) {
+        return date($this->text('date-format'), (int) strtotime($day . ' 12:00:00'));
+    }
+
+    /**
+     * Ansicht „Statistik“ (plugin/podcast?stats): Übersicht mit Zeitraum
+     * ($period, siehe STATS_PERIODS) oder eine Episode ($episode = UUID).
+     * Fasst vorher abgeschlossene Tage zusammen (statsMaintenance()).
+     */
+    private function renderStatsSection($canConfigure, $period = '30', $episode = '') {
+        $today = date('Y-m-d');
+        $now   = time();
+        $this->statsMaintenance($today);
+
+        // Öffentliche Episoden, neueste zuerst, mit dem Tag der Veröffentlichung
+        $pages     = [];
+        $published = [];
+        foreach ($this->getEpisodes() as $page) {
+            $uuid = $page->uuid();
+            if (!is_string($uuid) || $this->downloadState((string) $page->type(), $page->dateRaw(), $now) === 'none') {
+                continue;
+            }
+            $published[$uuid] = substr((string) $page->dateRaw(), 0, 10);
+            $pages[]          = $page;
+        }
+        usort($pages, function ($a, $b) {
+            return strcmp((string) $b->dateRaw(), (string) $a->dateRaw());
+        });
+
+        $period = is_string($period) && isset(self::STATS_PERIODS[$period]) ? $period : '30';
+        $detail = is_string($episode) && isset($published[$episode]) ? $episode : null;
+        if ($detail !== null) {
+            $from = $published[$detail];
+        } else {
+            $days = self::STATS_PERIODS[$period];
+            $from = $days > 0 ? $this->dayFromNumber($this->dayNumber($today) - $days + 1) : '';
+        }
+        $collected = $this->statsCollectFrom($this->statsAllDays($today), $from, $detail ?? '');
+        $summary   = $this->statsSummaryFrom($collected['daily'], $published, $from);
+
+        ob_start();
+        ?>
+        <div id="podcast-stats">
+          <div class="d-flex flex-wrap">
+            <?php if ($detail !== null || (is_string($episode) && $episode !== '')): ?>
+            <a href="<?php echo HTML_PATH_ADMIN_ROOT ?>plugin/podcast?stats" class="mr-4 mb-2">
+              <span class="fa fa-arrow-left mr-1"></span><?php echo $this->html('stats') ?>
+            </a>
+            <?php else: ?>
+            <a href="<?php echo HTML_PATH_ADMIN_ROOT ?>plugin/podcast" class="mr-4 mb-2">
+              <span class="fa fa-arrow-left mr-1"></span><?php echo $this->html('episodes') ?>
+            </a>
+            <?php endif ?>
+            <a href="#" id="podcast-stats-recalculate" class="mb-2" role="button">
+              <span class="fa fa-refresh mr-1"></span><?php echo $this->html('stats-recalculate') ?>
+            </a>
+          </div>
+          <?php if (!$this->countDownloads()): ?>
+            <div class="alert alert-info mt-2" role="status">
+              <?php echo $this->html('stats-off') ?>
+              <?php if ($canConfigure): ?>
+                <a href="<?php echo HTML_PATH_ADMIN_ROOT ?>configure-plugin/Podcast#podcast-countDownloads"><?php echo $this->html('stats-off-enable') ?></a>
+              <?php endif ?>
+            </div>
+          <?php endif ?>
+          <?php
+          if ($detail !== null) {
+              foreach ($pages as $page) {
+                  if ($page->uuid() === $detail) {
+                      echo $this->renderStatsEpisode($page, $summary['episodes'][$detail], $collected, $published[$detail], $today);
+                  }
+              }
+          } elseif (is_string($episode) && $episode !== '') {
+              echo '<div class="alert alert-warning mt-2" role="status">' . $this->html('stats-episode-not-found') . '</div>';
+          } else {
+              echo $this->renderStatsOverview($pages, $published, $summary, $collected, $period, $from, $today);
+          }
+          ?>
+          <p class="small text-muted mb-2"><?php echo $this->html('stats-note') ?></p>
+          <p class="small text-muted"><?php echo $this->html('stats-note-limits') ?></p>
+        </div>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * Übersicht: Zeitraum, Kennzahlen, Verlauf, Aufschlüsselung, gemeldete
+     * Abonnenten und die Tabelle der Episoden.
+     * @param Page[] $pages
+     * @param array<string, string> $published
+     * @param array{episodes: array<string, array<string, int>>, period: int, other: int} $summary
+     * @param array{daily: array<string, array<string, int>>, apps: array<string, int>, devices: array<string, int>, sources: array<string, int>} $collected
+     */
+    private function renderStatsOverview(array $pages, array $published, array $summary, array $collected, $period, $from, $today) {
+        $esc         = function ($value) { return htmlspecialchars((string) $value, ENT_QUOTES); };
+        $todayNumber = $this->dayNumber($today);
+        $storage     = $this->statsStorage();
+        $subscribers = $this->statsSubscribers($today);
+        $size        = function ($bytes) {
+            return $bytes > 0 ? $this->formatSize($bytes) : $this->text('size-kb', ['size' => 0]);
+        };
+        // „Gesamt“: ab dem ersten Tag mit Downloads bzw. der ersten Veröffentlichung
+        if ($from === '') {
+            $starts = array_merge(array_keys(array_filter($collected['daily'])), array_values($published), [$today]);
+            $from   = min(array_map('strval', $starts));
+        }
+        $series   = $this->statsSeries($this->statsDayTotals($collected['daily']), $from, $today);
+        $running  = false;
+        $labels   = ['30' => $this->text('stats-period-30'), '90' => $this->text('stats-period-90'),
+            '365' => $this->text('stats-period-365'), 'all' => $this->text('stats-period-all')];
+        ob_start();
+        ?>
+          <div class="btn-group btn-group-sm flex-wrap mt-2 mb-3" role="group" aria-label="<?php echo $this->html('stats-period') ?>">
+            <?php foreach ($labels as $key => $label):
+                // Schlüssel wie '30' macht PHP zur Zahl
+                $current = (string) $key === $period;
+            ?>
+              <a class="btn btn-outline-primary<?php echo $current ? ' active' : '' ?>"
+                 href="<?php echo $esc(HTML_PATH_ADMIN_ROOT . 'plugin/podcast?stats&period=' . $key) ?>"<?php echo $current ? ' aria-current="true"' : '' ?>><?php echo $esc($label) ?></a>
+            <?php endforeach ?>
+          </div>
+
+          <div class="d-flex flex-wrap">
+            <div class="podcast-stat mr-5 mb-3">
+              <div class="podcast-stat-value" id="podcast-stats-period-total"><?php echo $esc($this->formatCount($summary['period'])) ?></div>
+              <div class="podcast-stat-label"><?php echo $this->html('stats-downloads-in', ['period' => $labels[$period]]) ?></div>
+            </div>
+            <div class="podcast-stat mr-5 mb-3">
+              <div class="podcast-stat-value"><?php echo $esc($this->formatCount(array_sum(array_column($subscribers, 'count')))) ?></div>
+              <div class="podcast-stat-label"><?php echo $this->html('stats-subscribers-reported') ?></div>
+            </div>
+          </div>
+
+          <?php echo $this->renderStatsChart($series) ?>
+
+          <div class="row">
+            <?php echo $this->renderStatsShares($this->text('stats-apps'), $collected['apps']) ?>
+            <?php echo $this->renderStatsShares($this->text('stats-platforms'), $collected['devices']) ?>
+            <?php echo $this->renderStatsShares($this->text('stats-sources'), $this->statsSourceLabels($collected['sources'])) ?>
+          </div>
+
+          <h3 class="h6 mt-2"><?php echo $this->html('stats-subscribers-reported') ?></h3>
+          <?php if ($subscribers): ?>
+            <table class="table table-sm mb-2" id="podcast-stats-subscribers">
+              <thead>
+                <tr>
+                  <th class="border-0" scope="col"><?php echo $this->html('stats-service') ?></th>
+                  <th class="border-0 text-right" scope="col"><?php echo $this->html('stats-subscribers') ?></th>
+                  <th class="border-0 text-right d-none d-sm-table-cell" scope="col"><?php echo $this->html('stats-as-of') ?></th>
+                </tr>
+              </thead>
+              <tbody>
+                <?php foreach ($subscribers as $service): ?>
+                <tr>
+                  <td class="text-break"><?php echo $esc($service['name']) ?></td>
+                  <td class="text-right text-nowrap"><?php echo $esc($this->formatCount($service['count'])) ?></td>
+                  <td class="text-right text-nowrap d-none d-sm-table-cell"><?php echo $esc($this->formatDay($service['day'])) ?></td>
+                </tr>
+                <?php endforeach ?>
+              </tbody>
+            </table>
+          <?php else: ?>
+            <p class="text-muted small mb-1"><?php echo $this->html('stats-subscribers-none') ?></p>
+          <?php endif ?>
+          <p class="small text-muted mb-4"><?php echo $this->html('stats-subscribers-note') ?></p>
+
+          <p class="text-muted small mb-1">
+            <?php echo $this->html('stats-storage', [
+                'total' => $size($storage['raw'] + $storage['sums']),
+                'raw'   => $size($storage['raw']),
+                'sums'  => $size($storage['sums']),
+            ]) ?>
+          </p>
+
+          <?php if (empty($pages)): ?>
+            <p class="mt-4 text-muted"><?php echo $this->html('stats-none') ?></p>
+          <?php else: ?>
+            <table class="table mt-3">
+              <thead>
+                <tr>
+                  <th class="border-0" scope="col"><?php echo $this->html('stats-episode') ?></th>
+                  <th class="border-0 text-right d-none d-lg-table-cell" scope="col"><?php echo $this->html('stats-1-day') ?></th>
+                  <th class="border-0 text-right d-none d-md-table-cell" scope="col"><?php echo $this->html('stats-1-week') ?></th>
+                  <th class="border-0 text-right d-none d-md-table-cell" scope="col"><?php echo $this->html('stats-4-weeks') ?></th>
+                  <th class="border-0 text-right d-none d-lg-table-cell" scope="col"><?php echo $this->html('stats-3-months') ?></th>
+                  <th class="border-0 text-right" scope="col"><?php echo $this->html('stats-total') ?></th>
+                </tr>
+              </thead>
+              <tbody>
+                <?php foreach ($pages as $page):
+                    $uuid    = (string) $page->uuid();
+                    $values  = $this->statsWindowValues($summary['episodes'][$uuid], $todayNumber - $this->dayNumber($published[$uuid]));
+                    $running = $running || in_array(false, array_column($values, 'complete'), true);
+                    $title   = $this->plainTitle($page);
+                ?>
+                <tr class="podcast-stats-row" data-uuid="<?php echo $esc($uuid) ?>">
+                  <td class="pt-3">
+                    <div class="text-break">
+                      <a class="podcast-episode-title" href="<?php echo $esc(HTML_PATH_ADMIN_ROOT . 'plugin/podcast?stats&episode=' . $uuid) ?>"><?php
+                        echo $title !== '' ? $esc($title) : '<span class="label-empty-title">' . $this->html('no-title') . '</span>' ?></a>
+                    </div>
+                    <p class="podcast-episode-meta m-0 text-uppercase text-muted">
+                      <?php echo $esc($page->date($this->text('date-format'))) ?><span class="d-md-none"> · <?php
+                        echo $this->html('stats-1-week-n', ['count' => $values['d7']['text']]) ?> · <?php echo $this->html('stats-4-weeks-n', ['count' => $values['d28']['text']]) ?></span>
+                    </p>
+                  </td>
+                  <td class="pt-3 text-right text-nowrap d-none d-lg-table-cell podcast-stats-d1"><?php echo $esc($values['d1']['text']) ?></td>
+                  <td class="pt-3 text-right text-nowrap d-none d-md-table-cell podcast-stats-d7"><?php echo $esc($values['d7']['text']) ?></td>
+                  <td class="pt-3 text-right text-nowrap d-none d-md-table-cell podcast-stats-d28"><?php echo $esc($values['d28']['text']) ?></td>
+                  <td class="pt-3 text-right text-nowrap d-none d-lg-table-cell podcast-stats-d91"><?php echo $esc($values['d91']['text']) ?></td>
+                  <td class="pt-3 text-right text-nowrap podcast-stats-total"><strong><?php echo $esc($this->formatCount($summary['episodes'][$uuid]['total'])) ?></strong></td>
+                </tr>
+                <?php endforeach ?>
+                <?php if ($summary['other'] > 0): ?>
+                <tr>
+                  <td class="pt-3 text-muted"><?php echo $this->html('stats-deleted') ?></td>
+                  <td class="d-none d-lg-table-cell"></td>
+                  <td class="d-none d-md-table-cell"></td>
+                  <td class="d-none d-md-table-cell"></td>
+                  <td class="d-none d-lg-table-cell"></td>
+                  <td class="pt-3 text-right text-nowrap text-muted"><?php echo $esc($this->formatCount($summary['other'])) ?></td>
+                </tr>
+                <?php endif ?>
+              </tbody>
+            </table>
+            <p class="small text-muted mb-2"><?php echo $this->html('stats-windows-note') ?><?php if ($running): ?> * <?php echo $this->html('stats-running') ?><?php endif ?></p>
+          <?php endif ?>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * Eine Episode: Kennzahlen, Verlauf seit der Veröffentlichung und
+     * Aufschlüsselung (seit der Veröffentlichung).
+     * @param array<string, int> $counts Kennzahlen aus statsSummaryFrom()
+     * @param array{daily: array<string, array<string, int>>, apps: array<string, int>, devices: array<string, int>, sources: array<string, int>} $collected
+     */
+    private function renderStatsEpisode($page, array $counts, array $collected, $published, $today) {
+        $esc    = function ($value) { return htmlspecialchars((string) $value, ENT_QUOTES); };
+        $uuid   = (string) $page->uuid();
+        $values = $this->statsWindowValues($counts, $this->dayNumber($today) - $this->dayNumber($published));
+        $series = $this->statsSeries($this->statsDayTotals($collected['daily'], $uuid), $published, $today);
+        $title  = $this->plainTitle($page);
+        $tiles  = ['d1' => 'stats-1-day', 'd7' => 'stats-1-week', 'd28' => 'stats-4-weeks', 'd91' => 'stats-3-months'];
+        ob_start();
+        ?>
+          <h3 class="h5 mt-2 mb-1 text-break" id="podcast-stats-episode" data-uuid="<?php echo $esc($uuid) ?>"><?php
+            echo $title !== '' ? $esc($title) : $this->html('no-title') ?></h3>
+          <p class="text-muted small mb-3"><?php echo $esc($page->date($this->text('date-format'))) ?></p>
+          <div class="d-flex flex-wrap">
+            <?php foreach ($tiles as $key => $label): ?>
+            <div class="podcast-stat mr-4 mb-3">
+              <div class="podcast-stat-value"><?php echo $esc($values[$key]['text']) ?></div>
+              <div class="podcast-stat-label"><?php echo $this->html($label) ?></div>
+            </div>
+            <?php endforeach ?>
+            <div class="podcast-stat mr-4 mb-3">
+              <div class="podcast-stat-value" id="podcast-stats-episode-total"><?php echo $esc($this->formatCount($counts['total'])) ?></div>
+              <div class="podcast-stat-label"><?php echo $this->html('stats-total') ?></div>
+            </div>
+          </div>
+          <?php if (in_array(false, array_column($values, 'complete'), true)): ?>
+            <p class="small text-muted mb-3">* <?php echo $this->html('stats-running') ?></p>
+          <?php endif ?>
+
+          <?php echo $this->renderStatsChart($series, $this->text('stats-since', ['date' => $this->formatDay($published)])) ?>
+
+          <div class="row">
+            <?php echo $this->renderStatsShares($this->text('stats-apps'), $collected['apps']) ?>
+            <?php echo $this->renderStatsShares($this->text('stats-platforms'), $collected['devices']) ?>
+            <?php echo $this->renderStatsShares($this->text('stats-sources'), $this->statsSourceLabels($collected['sources'])) ?>
+          </div>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * Werte der Spalten 1 Tag … 3 Monate als Text; solange der Zeitraum läuft,
+     * mit „*“. $age = Tage seit dem Tag der Veröffentlichung.
+     * @param array<string, int> $counts
+     * @return array<string, array{text: string, complete: bool}>
+     */
+    private function statsWindowValues(array $counts, $age) {
+        $values = [];
+        foreach (self::STATS_WINDOWS as $key => $days) {
+            $complete     = $age >= $days;
+            $values[$key] = ['text' => $this->formatCount($counts[$key] ?? 0) . ($complete ? '' : '*'), 'complete' => $complete];
+        }
+        return $values;
+    }
+
+    /** Quellen mit ihrer Bezeichnung. @param array<string, int> $sources @return array<string, int> */
+    private function statsSourceLabels(array $sources) {
+        $labels = [];
+        foreach ($sources as $source => $count) {
+            $label          = $source === 'feed' ? $this->text('stats-source-feed') : $this->text('stats-source-player');
+            $labels[$label] = ($labels[$label] ?? 0) + $count;
+        }
+        return $labels;
+    }
+
+    /**
+     * Säulendiagramm in einer Farbe (HTML und CSS): Y-Achse mit runden Werten,
+     * Hinweis beim Darüberfahren per Skript (data-tip), Tabelle als
+     * zugängliche Alternative.
+     * @param array{unit: string, points: array<int, array{start: string, value: int}>} $series
+     */
+    private function renderStatsChart(array $series, $subtitle = '') {
+        $esc     = function ($value) { return htmlspecialchars((string) $value, ENT_QUOTES); };
+        $values  = array_column($series['points'], 'value');
+        $max     = $values ? max($values) : 0;
+        if ($series['unit'] === 'day') {
+            $caption = $this->text('stats-chart-day');
+        } elseif ($series['unit'] === 'week') {
+            $caption = $this->text('stats-chart-week');
+        } else {
+            $caption = $this->text('stats-chart-month');
+        }
+        $caption .= $subtitle !== '' ? ' · ' . $subtitle : '';
+        $label   = function ($start) use ($series) {
+            $time = (int) strtotime($start . ' 12:00:00');
+            if ($series['unit'] === 'month') {
+                return date($this->text('stats-month-format'), $time);
+            }
+            $date = date($this->text('date-format'), $time);
+            return $series['unit'] === 'week' ? $this->text('stats-week-of', ['date' => $date]) : $date;
+        };
+        ob_start();
+        ?>
+          <figure class="podcast-chart mb-4">
+            <figcaption class="podcast-chart-caption"><?php echo $esc($caption) ?></figcaption>
+            <?php if ($max === 0): ?>
+              <p class="text-muted small mb-0"><?php echo $this->html('stats-chart-empty') ?></p>
+            <?php else:
+                [$top, $step] = $this->chartScale($max);
+                $points = $series['points'];
+            ?>
+              <div class="podcast-chart-plot" role="img" aria-label="<?php echo $esc($caption) ?>">
+                <?php for ($tick = 0; $tick <= $top; $tick += $step): ?>
+                  <div class="podcast-chart-grid<?php echo $tick === 0 ? ' is-base' : '' ?>" style="bottom: <?php echo round($tick * 100 / $top, 3) ?>%"><span><?php echo $esc($this->formatCount($tick)) ?></span></div>
+                <?php endfor ?>
+                <div class="podcast-chart-bars">
+                  <?php foreach ($points as $point): ?>
+                    <div class="podcast-chart-col" data-tip="<?php echo $esc($this->text('stats-tip', ['count' => $this->formatCount($point['value']), 'date' => $label($point['start'])])) ?>"><span class="podcast-chart-bar" style="height: <?php echo round($point['value'] * 100 / $top, 3) ?>%"></span></div>
+                  <?php endforeach ?>
+                </div>
+              </div>
+              <div class="podcast-chart-axis">
+                <span><?php echo $esc($label($points[0]['start'])) ?></span>
+                <span><?php echo $esc($label($points[count($points) - 1]['start'])) ?></span>
+              </div>
+              <details class="podcast-chart-table mt-2">
+                <summary class="small"><?php echo $this->html('stats-chart-table') ?></summary>
+                <table class="table table-sm mt-2">
+                  <thead>
+                    <tr>
+                      <th class="border-0" scope="col"><?php echo $this->html('stats-date') ?></th>
+                      <th class="border-0 text-right" scope="col"><?php echo $this->html('stats-downloads') ?></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <?php foreach (array_reverse($points) as $point): ?>
+                    <tr><td><?php echo $esc($label($point['start'])) ?></td><td class="text-right"><?php echo $esc($this->formatCount($point['value'])) ?></td></tr>
+                    <?php endforeach ?>
+                  </tbody>
+                </table>
+              </details>
+            <?php endif ?>
+          </figure>
+        <?php
+        return ob_get_clean();
+    }
+
+    /**
+     * Aufschlüsselung als Liste mit Balken (Anteil am Ganzen), größte zuerst;
+     * ab dem neunten Eintrag zusammen als „Sonstige“.
+     * @param array<string, int> $counts Bezeichnung → Downloads
+     */
+    private function renderStatsShares($title, array $counts) {
+        $esc   = function ($value) { return htmlspecialchars((string) $value, ENT_QUOTES); };
+        $total = array_sum($counts);
+        arsort($counts);
+        $rows  = [];
+        foreach (array_slice($counts, 0, 8, true) as $name => $count) {
+            $rows[] = ['name' => (string) $name, 'count' => $count, 'other' => false];
+        }
+        $rest = $total - array_sum(array_column($rows, 'count'));
+        if ($rest > 0) {
+            $rows[] = ['name' => $this->text('stats-other'), 'count' => $rest, 'other' => true];
+        }
+        ob_start();
+        ?>
+            <div class="col-md-4 mb-4 podcast-shares">
+              <h3 class="h6"><?php echo $esc($title) ?></h3>
+              <?php if ($total === 0): ?>
+                <p class="text-muted small mb-0">–</p>
+              <?php else: ?>
+                <ul class="list-unstyled mb-0">
+                  <?php foreach ($rows as $row):
+                      $share = $row['count'] * 100 / $total;
+                      $text  = $share > 0 && $share < 1 ? '<1' : (string) round($share);
+                  ?>
+                  <li class="mb-2">
+                    <div class="d-flex justify-content-between small">
+                      <span class="text-break mr-2"><?php echo $esc($row['name']) ?></span>
+                      <span class="text-nowrap text-muted"><?php echo $this->html('stats-share', ['count' => $this->formatCount($row['count']), 'share' => $text]) ?></span>
+                    </div>
+                    <div class="podcast-share-track"><span class="podcast-share-bar<?php echo $row['other'] ? ' is-other' : '' ?>" style="width: <?php echo round($share, 2) ?>%"></span></div>
+                  </li>
+                  <?php endforeach ?>
+                </ul>
+              <?php endif ?>
+            </div>
+        <?php
+        return ob_get_clean();
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     // EPISODE CRUD API (aufgerufen aus beforeAll)
     // ═══════════════════════════════════════════════════════════════════
 
@@ -1565,6 +3171,8 @@ class Podcast extends Plugin {
                     return $this->handleDeleteMedia($_POST['files'] ?? null);
                 case 'list_media':
                     return $this->handleListMedia($this->postString($_POST, 'type'), $this->postString($_POST, 'purpose'));
+                case 'stats_recalculate':
+                    return $this->handleStatsRecalculate();
                 default:
                     return ['error' => $this->text('error-unknown-action')];
             }
@@ -2594,12 +4202,16 @@ class Podcast extends Plugin {
             }
         }
 
-        // Sortierung: Episodennummer absteigend, gleiche Nummer nach Datum
-        usort($episodes, function ($a, $b) {
-            $metaA = $this->getEpisodeMeta($a);
-            $metaB = $this->getEpisodeMeta($b);
-            $numA  = isset($metaA['itunes_episode']) ? (int) $metaA['itunes_episode'] : 0;
-            $numB  = isset($metaB['itunes_episode']) ? (int) $metaB['itunes_episode'] : 0;
+        // Sortierung: Episodennummer absteigend, gleiche Nummer nach Datum;
+        // Nummern vorab einmal je Seite lesen, nicht in jedem Vergleich
+        $numbers = [];
+        foreach ($episodes as $page) {
+            $meta = $this->getEpisodeMeta($page);
+            $numbers[$page->key()] = isset($meta['itunes_episode']) ? (int) $meta['itunes_episode'] : 0;
+        }
+        usort($episodes, function ($a, $b) use ($numbers) {
+            $numA = $numbers[$a->key()];
+            $numB = $numbers[$b->key()];
             if ($numA !== $numB) {
                 return $numB - $numA;
             }

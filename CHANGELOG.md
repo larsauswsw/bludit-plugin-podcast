@@ -6,6 +6,34 @@ and the plugin uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-19
+
+### Added
+
+- Setting "Max. episodes in the feed" in the channel settings: only the newest
+  episodes appear in the feed, older ones stay on the website.
+- Optional download statistics: with "Count downloads" turned on in the
+  channel settings, feed and player link to a counting address of the site
+  that redirects to the audio file. The new page **Podcast → Statistics**
+  shows the downloads of a chosen period (30 days, 90 days, 12 months, all
+  time) with a chart and broken down by app, platform and source (feed or
+  website player), the subscribers that services such as Feedly or Overcast
+  report when fetching the feed, and the downloads of each episode in the
+  first day, week, 4 weeks and 3 months and in total, with a page per
+  episode. Counted on your own server, similar to the IAB Podcast
+  Measurement Guidelines (one download per episode, IP address and app per
+  day; known bots, `HEAD` and test requests of podcast apps do not count);
+  not certified. No cookies, no IP addresses stored (only a hash with a key
+  that is deleted after the day), raw log kept for 90 days, then only daily
+  sums per user agent.
+
+### Changed
+
+- The feed is sent with `ETag` and `Last-Modified` and answers unchanged
+  requests with `304 Not Modified`, so podcast apps download it only after a
+  change. `lastBuildDate` is the time of the last change instead of the time
+  of the request.
+
 ## [1.1.0] - 2026-11-15
 
 ### Added
